@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sinovec-db
+    environment:
+      POSTGRES_DB: memory
+      POSTGRES_USER: sinovec
+      POSTGRES_PASSWORD: ${DB_PASS:-your_secure_password_here}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../schema.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sinovec -d memory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sinovec:
+    build: ..
+    container_name: sinovec-api
+    environment:
+      MEMORY_DB_HOST: postgres
+      MEMORY_DB_PORT: 5432
+      MEMORY_DB_NAME: memory
+      MEMORY_DB_USER: sinovec
+      MEMORY_DB_PASS: ${DB_PASS:-your_secure_password_here}
+      MEMORY_WORKSPACE: /data/workspace
+    volumes:
+      - ./workspace:/data/workspace
+      - ~/.cache/fastembed:/root/.cache/fastembed
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

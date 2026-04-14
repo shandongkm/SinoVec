@@ -1,0 +1,15 @@
+[Unit]
+Description=SinoVec Memory Layer HTTP API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/SinoVec
+EnvironmentFile=-/etc/default/sinovec
+ExecStart=/usr/bin/python3 /opt/SinoVec/memory_layer.py serve --host 127.0.0.1 --port 18793
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
