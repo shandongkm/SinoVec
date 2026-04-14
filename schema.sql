@@ -35,6 +35,10 @@ CREATE INDEX IF NOT EXISTS idx_mem0_source
 CREATE INDEX IF NOT EXISTS idx_mem0_created
     ON mem0 (created_at DESC);
 
+-- 用户 ID 索引（支持多用户隔离查询）
+CREATE INDEX IF NOT EXISTS idx_mem0_user_id
+    ON mem0 ((payload->>'user_id'));
+
 -- 自动更新 updated_at 触发器
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$

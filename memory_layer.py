@@ -6,7 +6,8 @@ SinoVec - 中文语义记忆系统
 
 import os, sys, json, threading, queue, logging, uuid
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingMixIn
+from socketserver import ThreadingMixIn
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 # ── 配置 ──────────────────────────────────────────────────────────────

@@ -1,54 +1,20 @@
-# SinoVec - 中文语义记忆系统
+# SinoVec - 高精度中文语义记忆系统
 
-基于 pgvector + FastEmbed 的本地中文语义记忆存储与检索系统。
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## 特性
+**SinoVec** 是专为中文场景设计的本地化、高精度、零 API 成本的长期记忆系统。基于 pgvector + FastEmbed 实现六层检索漏斗，可无缝集成到 OpenClaw 等 AI Agent 框架中。
 
-- 🌐 **中文优化** - 使用 BAAI/bge-small-zh-v1.5 embedding 模型
-- 🔍 **语义搜索** - 向量检索 + BM25 混合搜索
-- 🔄 **自动记忆提取** - 从对话中自动提取值得长期记忆的内容
-- 📊 **分层记忆** - HOT/WARM/COLD 三层记忆管理
-- 🛠️ **会话索引** - 自动索引对话历史
-- ⚡ **快速部署** - 支持 Docker 一键部署
+## ⚡ 快速开始
 
-## 架构
-
-```
-┌─────────────────────────────────────────┐
-│           OpenClaw / 其他 AI           │
-│              (客户端)                   │
-└──────────────┬──────────────────────────┘
-               │ HTTP /search?q=...
-               ▼
-┌─────────────────────────────────────────┐
-│          SinoVec API (port 18793)       │
-│         memory_layer.py serve            │
-└──────────────┬──────────────────────────┘
-               │ SQL
-               ▼
-┌─────────────────────────────────────────┐
-│          PostgreSQL + pgvector           │
-│              (向量数据库)                 │
-└─────────────────────────────────────────┘
-               ▲
-               │
-┌──────────────┴──────────────────────────┐
-│           定时任务 (cron)                │
-│  extract_memories.py  自动提取记忆       │
-│  session_indexer.py   索引会话历史       │
-│  memory_layer.py organize 整理记忆       │
-└─────────────────────────────────────────┘
-```
-
-## 快速开始
-
-### 方式一：Docker 部署（推荐）
+### 方式一：Docker 一键部署（推荐）
 
 ```bash
-git clone https://github.com/yourname/sinovec.git
-cd sinovec
-cp examples/config.env .env
-# 编辑 .env 填入你的配置
+git clone https://github.com/shandongkm/SinoVec.git
+cd SinoVec
+cp .env.example .env
+# 编辑 .env，填入数据库密码
 docker-compose up -d
 ```
 
@@ -58,40 +24,52 @@ docker-compose up -d
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 初始化数据库
+# 2. 初始化数据库（PostgreSQL 14+ required）
 psql -U postgres -c "CREATE DATABASE memory;"
 psql -U postgres -d memory -f schema.sql
 
 # 3. 配置环境变量
-cp examples/config.env .env
+cp .env.example .env
+# 编辑 .env 填入你的配置
 
 # 4. 启动服务
 python memory_layer.py serve --host 127.0.0.1 --port 18793
 ```
 
-## API 接口
+## 📡 API 接口
 
 ### 搜索记忆
+
 ```bash
-curl "http://127.0.0.1:18793/search?q=关键词&top_k=3&rerank=0&expand=0"
+curl "http://127.0.0.1:18793/search?q=关键词&top_k=3"
+```
+
+**响应示例：**
+```json
+{
+  "count": 2,
+  "results": [
+    {"id": "xxx-xxx", "score": 0.85, "data": "记忆内容..."},
+    {"id": "yyy-yyy", "score": 0.72, "data": "另一条记忆..."}
+  ]
+}
 ```
 
 ### 健康检查
+
 ```bash
 curl http://127.0.0.1:18793/health
+# {"status": "ok"}
 ```
 
-### 添加记忆
+### 统计信息
+
 ```bash
-python memory_layer.py add "这是一条测试记忆" --user 用户名
+curl http://127.0.0.1:18793/stats
+# {"total": 1936}
 ```
 
-### 查看统计
-```bash
-python memory_layer.py stats
-```
-
-## 配置说明
+## 🔧 配置说明
 
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
@@ -102,30 +80,83 @@ python memory_layer.py stats
 | `MEMORY_DB_PASS` | 数据库密码 | (必填) |
 | `HF_HUB_PROXY` | HuggingFace 代理 | (可选) |
 
-## 项目结构
+## 🔌 与 OpenClaw 集成
+
+将 SinoVec 作为 OpenClaw 的主动记忆插件使用：
+
+### 1. 注册插件
+
+在 `~/.openclaw/openclaw.json` 的 `plugins.entries` 中添加：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "active-memory-custom": {
+        "enabled": true,
+        "config": {
+          "apiUrl": "http://127.0.0.1:18793/search",
+          "topK": 3
+        }
+      }
+    }
+  }
+}
+```
+
+### 2. 启动 SinoVec 服务
+
+```bash
+systemctl enable --now memory-layer
+```
+
+### 3. 重启 OpenClaw Gateway
+
+```bash
+systemctl restart openclaw-gateway
+```
+
+## 📁 项目结构
 
 ```
-sinovec/
+SinoVec/
 ├── memory_layer.py       # 核心 API 服务
 ├── extract_memories.py   # 自动记忆提取脚本
 ├── session_indexer.py    # 会话索引脚本
-├── schema.sql            # 数据库表结构
-├── requirements.txt     # Python 依赖
-├── install.sh           # 安装脚本
+├── schema.sql           # 数据库表结构
+├── requirements.txt      # Python 依赖
+├── Dockerfile           # 容器镜像构建
+├── docker-compose.yml   # Docker 一键部署
+├── install.sh          # 快速安装脚本
 ├── memory_layer.service # systemd 服务配置
 └── examples/
     ├── config.env       # 配置示例
     └── docker-compose.yml
 ```
 
-## 依赖
+## 🧪 测试
 
-- Python 3.10+
-- PostgreSQL 14+ with pgvector extension
-- FastEmbed (本地向量生成)
-- psycopg2 (数据库连接)
-- jieba (中文分词)
+```bash
+# 运行单元测试
+pytest tests/ -v
 
-## License
+# 添加测试记忆
+python memory_layer.py add "测试内容" --user 用户名
 
-MIT
+# 查看统计
+python memory_layer.py stats
+```
+
+## 🛡️ 安全提示
+
+- **不要将 API 服务暴露到公网**
+- 数据库密码使用强密码
+- 定期备份数据库
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 📄 License
+
+MIT License - 详见 [LICENSE](LICENSE) 文件
