@@ -36,14 +36,16 @@ import psycopg2
 def db_conn():
     return psycopg2.connect(**MEMORY_DB)
 
-def is_recent(id: str) -> bool:
-    """检查是否在 DEDUP_WINDOW_HOURS 内已提取过"""
+def is_recent(source_id: str) -> bool:
+    """检查是否在 DEDUP_WINDOW_HOURS 内已提取过（按 source_id 查 payload）"""
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT created_at FROM mem0
-        WHERE id = %s AND created_at > NOW() - INTERVAL '%s hours'
-    """, (id, DEDUP_WINDOW_HOURS))
+        SELECT 1 FROM mem0
+        WHERE payload->>'source_id' = %s
+          AND last_access_time > NOW() - INTERVAL '%s hours'
+        LIMIT 1
+    """, (source_id, DEDUP_WINDOW_HOURS))
     exists = cur.fetchone() is not None
     cur.close()
     conn.close()
@@ -100,11 +102,24 @@ def scan_sessions(hours: int = 1) -> list[dict]:
                         continue
                     try:
                         msg = json.loads(line)
-                        if msg.get("role") == "user":
-                            content = msg.get("content", "")
-                            for mem in extract_from_text(content):
-                                if len(mem) > 10:
-                                    memories.append({"text": mem, "source": os.path.basename(path)})
+                        inner = msg.get("message", msg)  # 兼容嵌套格式
+                        role = inner.get("role", "")
+                        if role != "user":
+                            continue
+                        raw = inner.get("content", "")
+                        if isinstance(raw, str):
+                            text_content = raw
+                        elif isinstance(raw, list):
+                            parts = []
+                            for block in raw:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    parts.append(block.get("text", ""))
+                            text_content = " ".join(parts)
+                        else:
+                            text_content = ""
+                        for mem in extract_from_text(text_content):
+                            if len(mem) > 10:
+                                memories.append({"text": mem, "source": os.path.basename(path)})
                     except:
                         pass
         except:
@@ -124,11 +139,11 @@ def main():
         saved = 0
         for mem in memories:
             import hashlib
-            mem_id = hashlib.md5(mem["text"].encode()).hexdigest()[:8]
-            if is_recent(mem_id):
+            content_hash = hashlib.md5(mem["text"].encode()).hexdigest()[:16]
+            if is_recent(content_hash):
                 print(f"  ⏭ 跳过: {mem['text'][:50]}...")
                 continue
-            pid = save_memory(mem["text"], mem["source"])
+            pid = save_memory(mem["text"], content_hash)
             print(f"  ✅ 已写入: {mem['text'][:50]}...")
             saved += 1
         print(f"\n完成: 提取 {len(memories)} 条，跳过重复 {len(memories)-saved} 条")

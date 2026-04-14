@@ -68,17 +68,36 @@ def index_sessions():
             with open(path, encoding="utf-8") as f:
                 messages = [json.loads(l) for l in f if l.strip()]
             for i, msg in enumerate(messages):
-                if msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    if len(content) < 20:
-                        continue
-                    source_id = f"{session_id}_{i}"
-                    if is_duplicate(source_id):
-                        continue
-                    pid = save_fragment(content, session_id, source_id)
-                    saved += 1
-                    if saved % 50 == 0:
-                        print(f"  已处理 {saved} 个片段...")
+                # 支持两种格式: 1) 扁平 {role, content}  2) 嵌套 {type: 'message', message: {role, content}}
+                inner = msg.get("message", msg)  # 兼容嵌套格式
+                role = inner.get("role", "")
+                if role != "assistant":
+                    continue
+                # content 可能是字符串或内容块列表
+                raw_content = inner.get("content", "")
+                if isinstance(raw_content, str):
+                    content = raw_content
+                elif isinstance(raw_content, list):
+                    # 提取 text 类型的文本块
+                    parts = []
+                    for block in raw_content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                parts.append(block.get("text", ""))
+                            elif block.get("type") == "output":
+                                parts.append(block.get("text", ""))
+                    content = " ".join(parts)
+                else:
+                    content = ""
+                if len(content) < 20:
+                    continue
+                source_id = f"{session_id}_{i}"
+                if is_duplicate(source_id):
+                    continue
+                pid = save_fragment(content, session_id, source_id)
+                saved += 1
+                if saved % 50 == 0:
+                    print(f"  已处理 {saved} 个片段...")
         except Exception as e:
             print(f"  ⚠️  处理失败 {path}: {e}")
     print(f"✅ 索引完成: 新增 {saved} 个片段")
