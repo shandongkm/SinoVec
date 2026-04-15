@@ -253,14 +253,13 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
                     self._send_json({"error": str(e)}, 500)
             elif parsed.path == "/stats":
                 try:
-                    conn = get_conn()
-                    cur = conn.cursor()
-                    cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM mem0 WHERE source = 'memory'")
-                    total, recall_sum, recall_max = cur.fetchone()
-                    cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'memory' AND last_access_time > NOW() - INTERVAL '24 hours'")
-                    hot_24h = cur.fetchone()[0]
-                    cur.close()
-                    put_conn(conn)
+                    with get_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM mem0 WHERE source = 'memory'")
+                        total, recall_sum, recall_max = cur.fetchone()
+                        cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'memory' AND last_access_time > NOW() - INTERVAL '24 hours'")
+                        hot_24h = cur.fetchone()[0]
+                        cur.close()
                     self._send_json({
                         "total": total or 0,
                         "recall_total": recall_sum or 0,
@@ -447,23 +446,19 @@ def _is_low_quality_query(query: str) -> bool:
 def _log_lineage(source_id: str, operation: str, reason: str = "",
                  target_id: str = None, details: dict = None) -> None:
     """记录记忆操作到血缘表"""
-    conn = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        try:
-            cur.execute("""
-                INSERT INTO memory_lineage (source_id, operation, reason, target_id, details)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (source_id, operation, reason, target_id, json.dumps(details or {})))
-            conn.commit()
-        finally:
-            cur.close()
+        with get_conn() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("""
+                    INSERT INTO memory_lineage (source_id, operation, reason, target_id, details)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (source_id, operation, reason, target_id, json.dumps(details or {})))
+                conn.commit()
+            finally:
+                cur.close()
     except Exception as e:
         logging.warning(f"血缘记录失败: {e}")
-    finally:
-        if conn:
-            put_conn(conn)
 
 
 # ── 重排：同步完整重排 ─────────────────────────────────────
@@ -553,8 +548,8 @@ def _increment_access(mem_ids: list) -> None:
     if not mem_ids:
         return
     now = datetime.now(timezone.utc).isoformat()
-    conn = get_conn()
-    cur = conn.cursor()
+    with get_conn() as conn:
+        cur = conn.cursor()
     try:
         cur.execute("""
             UPDATE mem0
@@ -579,8 +574,8 @@ def cmd_dedup() -> dict:
     2. cosine_dist < COSINE_DIST_NEAR（即 sim > 0.9）→ 时效近的保留较完整的一条
     3. 用 pgvector 的 <=> 算距离，不重复计算 similarity
     """
-    conn = get_conn()
-    cur = None
+    with get_conn() as conn:
+        cur = None
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -594,7 +589,6 @@ def cmd_dedup() -> dict:
     finally:
         if cur is not None:
             cur.close()
-        put_conn(conn)
 
     merged = 0
     skipped = 0
@@ -768,8 +762,8 @@ def cmd_dedup_deep(threshold: float = COSINE_DIST_DEEP, dry_run: bool = True) ->
     conn = None
     cur = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
+        with get_conn() as conn:
+            cur = conn.cursor()
         try:
             cur.execute("SELECT id, vector, payload->>'data' FROM mem0")
             all_rows = cur.fetchall()
@@ -807,8 +801,6 @@ def cmd_dedup_deep(threshold: float = COSINE_DIST_DEEP, dry_run: bool = True) ->
     finally:
         if cur is not None:
             cur.close()
-        if conn is not None:
-            put_conn(conn)
 
 
 # ── 访问热度流转 ────────────────────────────────────────────
@@ -1260,8 +1252,8 @@ def cmd_search(query: str, top_k: int = 5, use_rerank: bool = True, user_id: str
     conn = None
     cur = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
+        with get_conn() as conn:
+            cur = conn.cursor()
 
         # 向量搜索
         vec_rows = _vector_search(cur, vec, top_k, user_id=user_id)
@@ -1274,8 +1266,7 @@ def cmd_search(query: str, top_k: int = 5, use_rerank: bool = True, user_id: str
     finally:
         if cur is not None:
             cur.close()
-        if conn is not None:
-            put_conn(conn)
+
 
     # 动态权重
     vec_w, bm25_w = _compute_dynamic_weights(query, vec_rows, bm25_rows)
@@ -1401,8 +1392,8 @@ def cmd_add(text: str, user: str = "主人", force: bool = False) -> str:
         "updated_at": now,
     }
 
-    conn = get_conn()
-    cur = None
+    with get_conn() as conn:
+        cur = None
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1413,13 +1404,12 @@ def cmd_add(text: str, user: str = "主人", force: bool = False) -> str:
     finally:
         if cur is not None:
             cur.close()
-        put_conn(conn)
     return mem_id
 
 
 def cmd_stats() -> dict:
-    conn = get_conn()
-    cur = None
+    with get_conn() as conn:
+        cur = None
     try:
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM mem0")
@@ -1434,7 +1424,6 @@ def cmd_stats() -> dict:
     finally:
         if cur is not None:
             cur.close()
-        put_conn(conn)
     return {
         "total": count,
         "by_user": by_user,
@@ -1446,8 +1435,8 @@ def cmd_stats() -> dict:
 
 def cmd_delete(mem_id: str) -> bool:
     _log_lineage(mem_id, "delete", reason="手动删除")
-    conn = get_conn()
-    cur = None
+    with get_conn() as conn:
+        cur = None
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM mem0 WHERE id = %s", (mem_id,))
@@ -1456,13 +1445,12 @@ def cmd_delete(mem_id: str) -> bool:
     finally:
         if cur is not None:
             cur.close()
-        put_conn(conn)
     return deleted
 
 
 def cmd_list(limit: int = 20) -> list[dict]:
-    conn = get_conn()
-    cur = None
+    with get_conn() as conn:
+        cur = None
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -1477,7 +1465,6 @@ def cmd_list(limit: int = 20) -> list[dict]:
     finally:
         if cur is not None:
             cur.close()
-        put_conn(conn)
     return [{"id": r[0], "data": r[1] or "", "user_id": r[2] or "", "created_at": r[3] or ""} for r in rows]
 
 
@@ -1588,8 +1575,8 @@ def cmd_session_l1_gap(gap_threshold: float = 0.3,
     conn = None
     cur = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
+        with get_conn() as conn:
+            cur = conn.cursor()
 
         # 尝试多个可能的 session 索引路径
         workspace = Path(_WORKSPACE_ENV)
@@ -1625,7 +1612,6 @@ def cmd_session_l1_gap(gap_threshold: float = 0.3,
                 print("⚠️ 未找到 session 索引文件，且 session_messages 表不存在")
                 print("   提示：session 索引由 session_indexer.py 生成，需先运行索引任务")
                 cur.close()
-                put_conn(conn)
                 return
 
         print(f"📊 Session 片段：{len(session_fragments)} 条")
@@ -1720,8 +1706,8 @@ def cmd_lineage_cleanup(days: int = 90, dry_run: bool = True) -> dict:
     conn = None
     cur = None
     try:
-        conn = get_conn()
-        cur = conn.cursor()
+        with get_conn() as conn:
+            cur = conn.cursor()
 
         cur.execute("SELECT count(*) FROM memory_lineage")
         total = cur.fetchone()[0]
@@ -1754,8 +1740,7 @@ def cmd_lineage_cleanup(days: int = 90, dry_run: bool = True) -> dict:
     finally:
         if cur is not None:
             cur.close()
-        if conn is not None:
-            put_conn(conn)
+
 
 
 # ── CLI ───────────────────────────────────────────────────
