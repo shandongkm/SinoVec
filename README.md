@@ -4,6 +4,8 @@
 [![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+📌 **[开发路线图](roadmap.md)** - 了解 SinoVec 的过去、现在和未来计划。
+
 **SinoVec** 是专为中文场景设计的本地化、高精度、零 API 成本的长期记忆系统。基于 pgvector + FastEmbed 实现向量 + BM25 混合检索，可无缝集成到 OpenClaw 等 AI Agent 框架中。
 
 ## ⚡ 快速开始
@@ -120,6 +122,8 @@ systemctl restart openclaw-gateway
 
 ```
 SinoVec/
+├── README.md             # 项目说明
+├── roadmap.md            # 开发路线图
 ├── memory_layer.py       # 核心 API 服务
 ├── extract_memories.py   # 自动记忆提取脚本（支持 --dry-run）
 ├── session_indexer.py     # 会话索引脚本（支持 --dry-run）
@@ -128,12 +132,13 @@ SinoVec/
 ├── Dockerfile            # 容器镜像构建
 ├── docker-compose.yml    # Docker 一键部署
 ├── install.sh            # 快速安装脚本
+├── uninstall.sh          # 卸载脚本
+├── memory_layer.service  # systemd 服务配置
 ├── CHANGELOG.md          # 版本变更日志
 ├── CONTRIBUTING.md       # 贡献指南
 ├── LICENSE               # MIT 许可证
 ├── .env.example          # 环境变量配置示例
 ├── .gitignore            # Git 忽略配置
-├── memory_layer.service  # systemd 服务配置
 └── examples/
     ├── config.env         # Docker 配置示例
     └── docker-compose.yml

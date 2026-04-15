@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-memory_layer.py — L1 记忆层（Mem0 + pgvector）CLI
+SinoVec - 高精度中文语义记忆系统
 
-增强功能：
-  - jieba 中文分词（BM25 精确度提升）
-  - LLM 查询扩展（自动改写 query）
-  - LLM 重排（对 Top-K 结果二次打分）
-  - 重排降级策略（候选<=5跳过重排，同步执行）
-  - Ollama 并发控制（最多2并发）
-  - 查询扩展缓存（无TTL永久缓存）
-  - 访问热度追踪（last_access_time + access_count）
+核心能力：
+  - 向量 + BM25 混合检索（动态权重）
+  - LLM 查询扩展（可选，提升召回率）
+  - LLM 重排（可选，对候选结果二次打分）
+  - 时间衰减（近期记忆权重更高）
+  - MMR 多样性去重（避免结果同质化）
+  - 访问热度追踪（access_count + last_access_time）
   - 记忆血缘记录（memory_lineage 表）
-  - 语义+时效去重
+  - 语义+时效去重（自动合并近似记忆）
+  - 自动记忆提取（从会话中提炼有价值信息）
+  - 会话历史索引（索引 AI 回复片段）
+  - HTTP API（供 OpenClaw 等 Agent 框架调用）
 """
 
 import os
