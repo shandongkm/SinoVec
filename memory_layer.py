@@ -24,6 +24,10 @@ import uuid
 import hashlib
 import argparse
 import logging
+
+# 模型下载代理（mihomo）
+os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7890")
+os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7890")
 import os
 import queue
 import threading
@@ -1494,23 +1498,23 @@ def cmd_summarize(query: str, top_k: int = 5) -> dict:
 
 def cmd_recall_analysis(limit: int = 50) -> None:
     """分析 recall=0 的低价值记忆，输出内容供人工判断"""
-    conn = get_conn()
-    cur = conn.cursor()
+    with get_conn() as conn:
+        cur = conn.cursor()
 
-    cur.execute("""
-        SELECT id, payload->>'data' as data,
-               payload->>'user_id' as user_id,
-               payload->>'created_at' as created_at,
-               recall_count
-        FROM mem0
-        WHERE recall_count = 0
-        ORDER BY (payload->>'created_at')::timestamp DESC
-        LIMIT %s
-    """, (limit,))
-    rows = cur.fetchall()
+        cur.execute("""
+            SELECT id, payload->>'data' as data,
+                   payload->>'user_id' as user_id,
+                   payload->>'created_at' as created_at,
+                   recall_count
+            FROM mem0
+            WHERE recall_count = 0
+            ORDER BY (payload->>'created_at')::timestamp DESC
+            LIMIT %s
+        """, (limit,))
+        rows = cur.fetchall()
 
-    cur.execute("SELECT count(*) FROM mem0 WHERE recall_count = 0")
-    total_zero = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM mem0 WHERE recall_count = 0")
+        total_zero = cur.fetchone()[0]
 
     short = short_mid = trivial = good = 0
     trivial_phrases = {
@@ -1560,9 +1564,6 @@ def cmd_recall_analysis(limit: int = 50) -> None:
     if good > short:
         print(f"   · {good} 条可能价值，需人工复核")
     print(f"   · 运行 dedup-deep 批量处理重复")
-
-    cur.close()
-    put_conn(conn)
 
 
 def cmd_session_l1_gap(gap_threshold: float = 0.3,
