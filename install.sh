@@ -1,86 +1,171 @@
 #!/bin/bash
+#
 # SinoVec 安装脚本
+# 用法: ./install.sh [安装目录]
+# 默认安装目录: /opt/SinoVec
+#
 
 set -e
+
+# 默认值（与 memory_layer.py 保持一致）
+DEFAULT_DB_PORT=5433
+DEFAULT_DB_USER=openclaw
+
+PREFIX="${1:-/opt/SinoVec}"
+CURRENT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "========================================="
 echo "  SinoVec 安装脚本"
 echo "========================================="
+echo "安装目录: $PREFIX"
 
-# 检查 Python 版本
-PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
-echo "Python 版本: $PYTHON_VERSION"
-
-# 检查 PostgreSQL
-if command -v psql &> /dev/null; then
-    PG_VERSION=$(psql --version | awk '{print $3}')
-    echo "PostgreSQL 版本: $PG_VERSION"
-else
-    echo "错误: 未安装 PostgreSQL"
-    echo "Ubuntu/Debian: sudo apt install postgresql"
-    echo "CentOS/RHEL: sudo yum install postgresql-server"
+# ── 检查 root 权限 ──────────────────────────────────────────
+if [ "$EUID" -ne 0 ]; then
+    echo "错误: 请使用 sudo 或以 root 用户运行"
     exit 1
 fi
 
-# 检查 pgvector 扩展
+# ── 检查 Python ─────────────────────────────────────────────
+if ! command -v python3 &> /dev/null; then
+    echo "错误: 未安装 Python3"
+    exit 1
+fi
+PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+echo "Python 版本: $PYTHON_VERSION"
+
+# ── 检查 PostgreSQL ─────────────────────────────────────────
+if ! command -v psql &> /dev/null; then
+    echo "错误: 未安装 PostgreSQL"
+    echo "Ubuntu/Debian: sudo apt install postgresql"
+    echo "CentOS/RHEL:   sudo yum install postgresql-server"
+    exit 1
+fi
+PG_VERSION=$(psql --version | awk '{print $3}')
+echo "PostgreSQL 版本: $PG_VERSION"
+
+# ── 检查 pgvector ────────────────────────────────────────────
 if psql -U postgres -c "SELECT * FROM pg_extension WHERE extname='vector';" 2>/dev/null | grep -q vector; then
     echo "✅ pgvector 扩展已安装"
 else
     echo "⚠️  pgvector 扩展未安装，正在安装..."
-    sudo apt update
-    sudo apt install -y postgresql-16-pgvector  # 根据你的 PostgreSQL 版本调整
+    apt update
+    apt install -y postgresql-16-pgvector
     sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
 fi
 
-# 创建数据库
-echo "请设置数据库配置:"
-read -p "数据库用户 [postgres]: " DB_USER
-DB_USER=${DB_USER:-postgres}
-read -p "数据库名称 [memory]: " DB_NAME
-DB_NAME=${DB_NAME:-memory}
+# ── 数据库配置（默认值与 memory_layer.py 一致）─────────────
+read -p "数据库端口 [$DEFAULT_DB_PORT]: " DB_PORT
+DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
+
+read -p "数据库用户 [$DEFAULT_DB_USER]: " DB_USER
+DB_USER=${DB_USER:-$DEFAULT_DB_USER}
+
 read -sp "数据库密码: " DB_PASS
 echo ""
 
-# 创建数据库
-sudo -u postgres psql -c "CREATE DATABASE $DB_NAME;" 2>/dev/null || echo "数据库已存在"
-sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASS';"
+if [ -z "$DB_PASS" ]; then
+    echo "错误: 密码不能为空"
+    exit 1
+fi
 
-# 导入表结构
-PGPASSWORD=$DB_PASS psql -U $DB_USER -d $DB_NAME -f schema.sql
-echo "✅ 数据库表结构已创建"
+read -p "数据库名称 [memory]: " DB_NAME
+DB_NAME=${DB_NAME:-memory}
 
-# 安装 Python 依赖
+# ── 创建数据库和用户 ─────────────────────────────────────────
+echo "配置数据库..."
+
+# 创建数据库（如不存在）
+sudo -u postgres psql -c "CREATE DATABASE $DB_NAME;" 2>/dev/null || echo "数据库 $DB_NAME 已存在"
+
+# 创建用户（如不存在则创建并设置密码）
+if sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1; then
+    echo "用户 $DB_USER 已存在"
+else
+    sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
+fi
+sudo -u postgres psql -c "ALTER USER $DB_USER WITH SUPERUSER;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
+
+# ── 导入表结构 ──────────────────────────────────────────────
+echo "导入数据库表结构..."
+PGPASSWORD="$DB_PASS" psql -U "$DB_USER" -d "$DB_NAME" -f "$CURRENT_DIR/schema.sql"
+echo "✅ 表结构已创建"
+
+# ── 安装 Python 依赖 ────────────────────────────────────────
 echo "安装 Python 依赖..."
-pip3 install -r requirements.txt
+pip3 install -r "$CURRENT_DIR/requirements.txt"
 
-# 配置环境变量
-echo "创建配置文件..."
-cat > config.env << EOF
-# SinoVec 环境配置
-export MEMORY_DB_HOST=127.0.0.1
-export MEMORY_DB_PORT=5432
-export MEMORY_DB_NAME=$DB_NAME
-export MEMORY_DB_USER=$DB_USER
-export MEMORY_DB_PASS=$DB_PASS
+# ── 复制代码到安装目录 ─────────────────────────────────────
+echo "安装代码到 $PREFIX..."
+mkdir -p "$PREFIX"
+cp -r "$CURRENT_DIR"/. "$PREFIX"/
 
-# 可选: HuggingFace 代理 (国内需要)
-# export HF_HUB_PROXY=http://127.0.0.1:7890
+# ── 生成环境变量文件 ────────────────────────────────────────
+echo "创建环境变量配置 /etc/default/sinovec..."
+cat > /etc/default/sinovec << EOF
+# SinoVec 环境变量（由 install.sh 自动生成，请勿手动修改）
+
+# 安装路径（供 systemd service 使用）
+SINOVEC_HOME="$PREFIX"
+
+# 数据库连接配置（memory_layer.py 从环境变量读取）
+MEMORY_DB_HOST=127.0.0.1
+MEMORY_DB_PORT=$DB_PORT
+MEMORY_DB_NAME=$DB_NAME
+MEMORY_DB_USER=$DB_USER
+MEMORY_DB_PASS=$DB_PASS
+
+# HuggingFace 代理（国内用户需要则取消注释）
+# HF_HUB_PROXY=http://127.0.0.1:7890
 EOF
 
-# 复制服务配置
-sudo cp memory_layer.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable memory-layer
+# ── 生成 systemd service 文件 ───────────────────────────────
+echo "配置 systemd 服务..."
+cat > /etc/systemd/system/memory_layer.service << EOF
+[Unit]
+Description=SinoVec Memory Layer HTTP API
+After=network.target postgresql.service
 
+[Service]
+Type=simple
+User=root
+WorkingDirectory=\${SINOVEC_HOME}
+EnvironmentFile=-/etc/default/sinovec
+ExecStart=/usr/bin/python3 \${SINOVEC_HOME}/memory_layer.py serve --host 127.0.0.1 --port 18793
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable memory-layer
+systemctl start memory-layer
+
+# ── 验证 ───────────────────────────────────────────────────
+sleep 2
+if systemctl is-active --quiet memory-layer; then
+    echo "✅ 服务启动成功"
+else
+    echo "⚠️  服务启动异常，请检查: systemctl status memory-layer"
+fi
+
+# ── 完成 ───────────────────────────────────────────────────
 echo ""
 echo "========================================="
 echo "  安装完成!"
 echo "========================================="
 echo ""
-echo "启动服务:"
-echo "  sudo systemctl start memory-layer"
-echo "  sudo systemctl status memory-layer"
+echo "管理命令:"
+echo "  sudo systemctl status memory-layer   # 查看状态"
+echo "  sudo systemctl restart memory-layer   # 重启"
+echo "  sudo systemctl stop memory-layer      # 停止"
 echo ""
-echo "测试搜索:"
-echo "  curl 'http://127.0.0.1:18793/search?q=测试&top_k=3'"
+echo "API 地址:"
+echo "  http://127.0.0.1:18793/health        # 健康检查"
+echo "  http://127.0.0.1:18793/stats         # 统计信息"
+echo ""
+echo "配置文件: /etc/default/sinovec"
+echo "安装目录: $PREFIX"
 echo ""
