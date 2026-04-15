@@ -121,15 +121,18 @@ systemctl restart openclaw-gateway
 ```
 SinoVec/
 ├── memory_layer.py       # 核心 API 服务
-├── extract_memories.py  # 自动记忆提取脚本（支持 --dry-run）
-├── session_indexer.py    # 会话索引脚本（支持 --dry-run）
-├── schema.sql           # 数据库表结构
-├── requirements.txt     # Python 依赖
-├── Dockerfile           # 容器镜像构建
-├── docker-compose.yml   # Docker 一键部署
-├── install.sh           # 快速安装脚本
-├── CHANGELOG.md         # 版本变更日志
-├── memory_layer.service # systemd 服务配置
+├── extract_memories.py   # 自动记忆提取脚本（支持 --dry-run）
+├── session_indexer.py     # 会话索引脚本（支持 --dry-run）
+├── schema.sql            # 数据库表结构
+├── requirements.txt      # Python 依赖
+├── Dockerfile            # 容器镜像构建
+├── docker-compose.yml    # Docker 一键部署
+├── install.sh            # 快速安装脚本
+├── CHANGELOG.md          # 版本变更日志
+├── CONTRIBUTING.md       # 贡献指南
+├── LICENSE               # MIT 许可证
+├── .env.example          # 环境变量配置示例
+├── .gitignore            # Git 忽略配置
 └── examples/
     └── docker-compose.yml
 ```
