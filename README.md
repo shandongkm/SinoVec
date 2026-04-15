@@ -133,7 +133,9 @@ SinoVec/
 ├── LICENSE               # MIT 许可证
 ├── .env.example          # 环境变量配置示例
 ├── .gitignore            # Git 忽略配置
+├── memory_layer.service  # systemd 服务配置
 └── examples/
+    ├── config.env         # Docker 配置示例
     └── docker-compose.yml
 ```
 
