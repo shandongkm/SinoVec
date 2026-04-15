@@ -4,7 +4,7 @@
 [![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**SinoVec** 是专为中文场景设计的本地化、高精度、零 API 成本的长期记忆系统。基于 pgvector + FastEmbed 实现六层检索漏斗，可无缝集成到 OpenClaw 等 AI Agent 框架中。
+**SinoVec** 是专为中文场景设计的本地化、高精度、零 API 成本的长期记忆系统。基于 pgvector + FastEmbed 实现向量 + BM25 混合检索，可无缝集成到 OpenClaw 等 AI Agent 框架中。
 
 ## ⚡ 快速开始
 
@@ -66,7 +66,7 @@ curl http://127.0.0.1:18793/health
 
 ```bash
 curl http://127.0.0.1:18793/stats
-# {"total": 1936}
+# {"total": 3030, "recall_total": 241, "recall_max": 15, "hot_24h": 46}
 ```
 
 ## 🔧 配置说明
@@ -74,9 +74,9 @@ curl http://127.0.0.1:18793/stats
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
 | `MEMORY_DB_HOST` | 数据库地址 | 127.0.0.1 |
-| `MEMORY_DB_PORT` | 数据库端口 | 5432 |
+| `MEMORY_DB_PORT` | 数据库端口 | 5433 |
 | `MEMORY_DB_NAME` | 数据库名 | memory |
-| `MEMORY_DB_USER` | 数据库用户 | postgres |
+| `MEMORY_DB_USER` | 数据库用户 | openclaw |
 | `MEMORY_DB_PASS` | 数据库密码 | (必填) |
 | `HF_HUB_PROXY` | HuggingFace 代理 | (可选) |
 
@@ -121,16 +121,16 @@ systemctl restart openclaw-gateway
 ```
 SinoVec/
 ├── memory_layer.py       # 核心 API 服务
-├── extract_memories.py   # 自动记忆提取脚本
-├── session_indexer.py    # 会话索引脚本
+├── extract_memories.py  # 自动记忆提取脚本（支持 --dry-run）
+├── session_indexer.py    # 会话索引脚本（支持 --dry-run）
 ├── schema.sql           # 数据库表结构
-├── requirements.txt      # Python 依赖
+├── requirements.txt     # Python 依赖
 ├── Dockerfile           # 容器镜像构建
 ├── docker-compose.yml   # Docker 一键部署
-├── install.sh          # 快速安装脚本
+├── install.sh           # 快速安装脚本
+├── CHANGELOG.md         # 版本变更日志
 ├── memory_layer.service # systemd 服务配置
 └── examples/
-    ├── config.env       # 配置示例
     └── docker-compose.yml
 ```
 
@@ -145,6 +145,12 @@ python memory_layer.py add "测试内容" --user 用户名
 
 # 查看统计
 python memory_layer.py stats
+
+# 测试记忆提取（dry-run，不实际写入）
+python extract_memories.py --scan-recent --dry-run
+
+# 测试会话索引（dry-run，不实际写入）
+python session_indexer.py index --dry-run
 ```
 
 ## 🛡️ 安全提示
