@@ -6,6 +6,7 @@ SinoVec - 会话历史索引器
 
 import os, json, glob, hashlib
 from datetime import datetime
+from contextlib import contextmanager
 
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
 
@@ -29,6 +30,49 @@ MEMORY_DB = {
 _embedding_model = None
 _embedding_lock = __import__("threading").Lock()
 
+# ── 数据库连接上下文管理器 ──────────────────────────────────────────
+import psycopg2
+
+@contextmanager
+def get_conn():
+    conn = psycopg2.connect(**MEMORY_DB)
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def is_duplicate(source_id: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM mem0 WHERE payload->>'source_id' = %s LIMIT 1", (source_id,))
+        exists = cur.fetchone() is not None
+        cur.close()
+    return exists
+
+def save_fragment(text: str, session_id: str, source_id: str) -> str:
+    import uuid
+    vec = get_embedding(text)
+    pid = str(uuid.uuid4())
+    with get_conn() as conn:
+        cur = conn.cursor()
+        payload = json.dumps({
+            "data": text[:500],
+            "user_id": "会话",
+            "source": "session",
+            "session_id": session_id,
+            "source_id": source_id
+        })
+        cur.execute("""
+            INSERT INTO mem0 (id, vector, payload)
+            VALUES (%s, %s::vector, %s::jsonb)
+        """, (pid, vec, payload))
+        conn.commit()
+        cur.close()
+    return pid
+
 def get_embedding(text: str) -> list:
     global _embedding_model
     if _embedding_model is None:
@@ -41,39 +85,6 @@ def get_embedding(text: str) -> list:
                 _embedding_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
     arr = list(_embedding_model.embed([text]))[0]
     return [float(x) for x in arr]
-
-def is_duplicate(source_id: str) -> bool:
-    import psycopg2
-    conn = psycopg2.connect(**MEMORY_DB)
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM mem0 WHERE payload->>'source_id' = %s LIMIT 1", (source_id,))
-    exists = cur.fetchone() is not None
-    cur.close()
-    conn.close()
-    return exists
-
-def save_fragment(text: str, session_id: str, source_id: str) -> str:
-    import psycopg2, uuid
-    vec = get_embedding(text)
-    pid = str(uuid.uuid4())
-    conn = psycopg2.connect(**MEMORY_DB)
-    cur = conn.cursor()
-    payload = json.dumps({
-        "data": text[:500],
-        "user_id": "会话",
-        "source": "session",
-        "session_id": session_id,
-        "source_id": source_id
-    })
-    # 修复：移除 fts 手动插入，由数据库生成列自动计算
-    cur.execute("""
-        INSERT INTO mem0 (id, vector, payload)
-        VALUES (%s, %s::vector, %s::jsonb)
-    """, (pid, vec, payload))
-    conn.commit()
-    cur.close()
-    conn.close()
-    return pid
 
 def index_sessions(dry_run: bool = False):
     files = glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl"))
@@ -132,13 +143,11 @@ def main():
     if args.cmd == "index":
         index_sessions(dry_run=getattr(args, 'dry_run', False))
     elif args.cmd == "check":
-        import psycopg2
-        conn = psycopg2.connect(**MEMORY_DB)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'session'")
-        print(f"已索引 session 片段: {cur.fetchone()[0]}")
-        cur.close()
-        conn.close()
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'session'")
+            print(f"已索引 session 片段: {cur.fetchone()[0]}")
+            cur.close()
     else:
         parser.print_help()
 

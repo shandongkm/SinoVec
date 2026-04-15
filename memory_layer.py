@@ -22,6 +22,7 @@ import json
 import re
 import uuid
 import hashlib
+import hmac
 import argparse
 import logging
 
@@ -214,17 +215,17 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
             # 1. Authorization: Bearer <key>
             auth_header = self.headers.get("Authorization", "")
             token = auth_header.replace("Bearer ", "").strip()
-            if token == expected:
+            if token and expected and hmac.compare_digest(token, expected):
                 return True
             # 2. X-API-Key: <key>
             token = self.headers.get("X-API-Key", "").strip()
-            if token == expected:
+            if token and expected and hmac.compare_digest(token, expected):
                 return True
             # 3. ?api_key=<key>
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             token = params.get("api_key", [None])[0] or ""
-            if token == expected:
+            if token and expected and hmac.compare_digest(token, expected):
                 return True
             return False
 
@@ -371,21 +372,18 @@ _ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
 def _ollama_generate(prompt: str) -> str:
     try:
-        import urllib.request
-        req = urllib.request.Request(
+        resp = requests.post(
             f"{_ollama_base}/api/generate",
-            data=json.dumps({
+            json={
                 "model": _ollama_model,
                 "prompt": prompt,
                 "stream": False,
                 "temperature": OLLAMA_TEMPERATURE,
                 "max_tokens": OLLAMA_MAX_TOKENS,
-            }).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST"
+            },
+            timeout=60
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read()).get("response", "").strip()
+        return resp.json().get("response", "").strip()
     except Exception as _e:
         logger.warning(f"Ollama API 调用失败: {_e}")
         return ""
@@ -1186,6 +1184,11 @@ def _vector_search(cur, vec, top_k: int, user_id: str = None) -> list:
     return cur.fetchall()
 
 
+def _escape_like(text: str) -> str:
+    """转义 LIKE/ILIKE 中的通配符 %、_、\\"""
+    return re.sub(r"([%_\\])", r"\\\1", text)
+
+
 def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
                  user_id: str = None) -> list:
     """
@@ -1213,21 +1216,23 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         rows = cur.fetchall()
 
     if jieba_terms:
-        like_conditions = ' OR '.join([f"payload->>'data' ILIKE %s" for _ in jieba_terms])
+        escaped = [_escape_like(w) for w in jieba_terms]
+        like_values = [f'%{w}%' for w in escaped]
+        like_conditions = ' OR '.join([f"payload->>'data' ILIKE %s" for _ in escaped])
         if user_id:
             cur.execute(f"""
                 SELECT id, 0.3 AS bm25_rank, payload
                 FROM mem0
                 WHERE ({like_conditions}) AND payload->>'user_id' = %s
                 LIMIT %s
-            """, [f'%{w}%' for w in jieba_terms] + [user_id, top_k])
+            """, like_values + [user_id, top_k])
         else:
             cur.execute(f"""
                 SELECT id, 0.3 AS bm25_rank, payload
                 FROM mem0
                 WHERE {like_conditions}
                 LIMIT %s
-            """, [f'%{w}%' for w in jieba_terms] + [top_k])
+            """, like_values + [top_k])
         ilike_rows = cur.fetchall()
         seen = {r[0] for r in rows}
         rows += [r for r in ilike_rows if r[0] not in seen]

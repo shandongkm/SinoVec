@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.3 (2026-04-15)
+
+### 🔒 Security
+- **LIKE 通配符注入修复**：`_bm25_search` 中对 jieba_terms 的 `%`、`_`、`\` 进行转义，防止用户输入触发意外模式匹配。
+- **时序攻击防护**：`_check_auth` 中的密钥比较改用 `hmac.compare_digest`（常量时间比较）。
+
+### 🐛 Bug Fixes
+- **连接泄漏修复**：`extract_memories.py` 和 `session_indexer.py` 的数据库操作改用 `contextmanager` 封装，确保异常时连接正确关闭。
+
+### ⚡ Improvements
+- **Ollama 调用统一**：`_ollama_generate` 改用 `requests` 库（替代 `urllib`），与 `requirements.txt` 声明一致。
+
+---
+
 ## v1.0.2 (2026-04-15)
 
 ### 🔒 Security

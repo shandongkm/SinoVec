@@ -6,6 +6,7 @@ SinoVec - 自动记忆提取脚本
 
 import os, sys, json, re, glob
 from datetime import datetime
+from contextlib import contextmanager
 
 # ── 配置（统一从环境变量读取）───────────────────────────────────────
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
@@ -49,19 +50,29 @@ import psycopg2
 def db_conn():
     return psycopg2.connect(**MEMORY_DB)
 
+@contextmanager
+def get_conn():
+    conn = db_conn()
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 def is_recent(source_id: str) -> bool:
     """检查是否在 DEDUP_WINDOW_HOURS 内已提取过（按 source_id 查 payload）"""
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT 1 FROM mem0
-        WHERE payload->>'source_id' = %s
-          AND last_access_time > NOW() - INTERVAL '%s hours'
-        LIMIT 1
-    """, (source_id, DEDUP_WINDOW_HOURS))
-    exists = cur.fetchone() is not None
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 1 FROM mem0
+            WHERE payload->>'source_id' = %s
+              AND last_access_time > NOW() - INTERVAL '%s hours'
+            LIMIT 1
+        """, (source_id, DEDUP_WINDOW_HOURS))
+        exists = cur.fetchone() is not None
+        cur.close()
     return exists
 
 def save_memory(text: str, source_id: str, user: str = "主人") -> str:
@@ -69,17 +80,16 @@ def save_memory(text: str, source_id: str, user: str = "主人") -> str:
     import uuid
     vec = get_embedding(text)
     pid = str(uuid.uuid4())
-    conn = db_conn()
-    cur = conn.cursor()
-    payload = json.dumps({"data": text, "user_id": user, "source": "auto_extract", "source_id": source_id})
-    # 修复：移除 fts 手动插入，由数据库生成列自动计算
-    cur.execute("""
-        INSERT INTO mem0 (id, vector, payload)
-        VALUES (%s, %s::vector, %s::jsonb)
-    """, (pid, vec, payload))
-    conn.commit()
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        payload = json.dumps({"data": text, "user_id": user,
+                              "source": "auto_extract", "source_id": source_id})
+        cur.execute("""
+            INSERT INTO mem0 (id, vector, payload)
+            VALUES (%s, %s::vector, %s::jsonb)
+        """, (pid, vec, payload))
+        conn.commit()
+        cur.close()
     return pid
 
 # ── 记忆提取逻辑 ──────────────────────────────────────────────────────
