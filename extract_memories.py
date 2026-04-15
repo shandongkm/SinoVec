@@ -7,27 +7,33 @@ SinoVec - 自动记忆提取脚本
 import os, sys, json, re, glob
 from datetime import datetime
 
-# ── 配置 ──────────────────────────────────────────────────────────────
+# ── 配置（统一从环境变量读取）───────────────────────────────────────
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
 MEMORY_DB = {
     "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
-    "port": int(os.getenv("MEMORY_DB_PORT", "5432")),
+    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),  # 修正：默认5433
     "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "postgres"),
-    "password": os.getenv("MEMORY_DB_PASS", ""),
+    "user": os.getenv("MEMORY_DB_USER", "openclaw"),   # 修正：默认openclaw
+    "password": os.getenv("MEMORY_DB_PASS", "naZytYn2hKsy"),
 }
 DEDUP_WINDOW_HOURS = 6  # 6小时内重复内容跳过
 
-# ── 向量生成 ──────────────────────────────────────────────────────────
+# ── 向量生成（全局单例，避免重复加载模型）─────────────────────────────
+_embedding_model = None
+_embedding_lock = __import__("threading").Lock()
+
 def get_embedding(text: str) -> list:
-    """使用 FastEmbed 生成向量"""
-    import urllib.request, json as json_mod
-    hf_proxy = os.getenv("HF_HUB_PROXY", "")
-    if hf_proxy:
-        os.environ["HF_HUB_PROXY"] = hf_proxy
-    from fastembed import TextEmbedding
-    model = TextEmbedding("BAAI/bge-small-zh-v1.5")
-    arr = list(model.embed([text]))[0]
+    """使用 FastEmbed 生成向量（全局模型单例）"""
+    global _embedding_model
+    if _embedding_model is None:
+        with _embedding_lock:
+            if _embedding_model is None:
+                hf_proxy = os.getenv("HF_HUB_PROXY", "")
+                if hf_proxy:
+                    os.environ["HF_HUB_PROXY"] = hf_proxy
+                from fastembed import TextEmbedding
+                _embedding_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
+    arr = list(_embedding_model.embed([text]))[0]
     return [float(x) for x in arr]
 
 # ── 数据库 ────────────────────────────────────────────────────────────
@@ -59,10 +65,11 @@ def save_memory(text: str, source_id: str, user: str = "主人") -> str:
     conn = db_conn()
     cur = conn.cursor()
     payload = json.dumps({"data": text, "user_id": user, "source": "auto_extract", "source_id": source_id})
+    # 修复：移除 fts 手动插入，由数据库生成列自动计算
     cur.execute("""
-        INSERT INTO mem0 (id, vector, payload, fts)
-        VALUES (%s, %s::vector, %s::jsonb, to_tsvector('simple', %s))
-    """, (pid, vec, payload, text))
+        INSERT INTO mem0 (id, vector, payload)
+        VALUES (%s, %s::vector, %s::jsonb)
+    """, (pid, vec, payload))
     conn.commit()
     cur.close()
     conn.close()
@@ -102,7 +109,7 @@ def scan_sessions(hours: int = 1) -> list[dict]:
                         continue
                     try:
                         msg = json.loads(line)
-                        inner = msg.get("message", msg)  # 兼容嵌套格式
+                        inner = msg.get("message", msg)
                         role = inner.get("role", "")
                         if role != "user":
                             continue
@@ -131,6 +138,7 @@ def main():
     parser = argparse.ArgumentParser(description="SinoVec 自动记忆提取")
     parser.add_argument("--scan-recent", action="store_true", help="扫描最近会话")
     parser.add_argument("--hours", type=int, default=1, help="扫描最近几小时")
+    parser.add_argument("--dry-run", action="store_true", help="仅扫描，不写入数据库")
     args = parser.parse_args()
 
     if args.scan_recent:
@@ -143,10 +151,13 @@ def main():
             if is_recent(content_hash):
                 print(f"  ⏭ 跳过: {mem['text'][:50]}...")
                 continue
-            pid = save_memory(mem["text"], content_hash)
-            print(f"  ✅ 已写入: {mem['text'][:50]}...")
+            if args.dry_run:
+                print(f"  [dry-run] 应写入: {mem['text'][:50]}...")
+            else:
+                pid = save_memory(mem["text"], content_hash)
+                print(f"  ✅ 已写入: {mem['text'][:50]}...")
             saved += 1
-        print(f"\n完成: 提取 {len(memories)} 条，跳过重复 {len(memories)-saved} 条")
+        print(f"\n完成: 扫描 {len(memories)} 条，{'本应写入' if args.dry_run else '实际写入'} {saved} 条")
     else:
         parser.print_help()
 

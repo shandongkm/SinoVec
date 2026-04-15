@@ -209,6 +209,24 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
                     self._send_json(wrapped)
                 except Exception as e:
                     self._send_json({"error": str(e)}, 500)
+            elif parsed.path == "/stats":
+                try:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM mem0 WHERE source = 'memory'")
+                    total, recall_sum, recall_max = cur.fetchone()
+                    cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'memory' AND last_access_time > NOW() - INTERVAL '24 hours'")
+                    hot_24h = cur.fetchone()[0]
+                    cur.close()
+                    put_conn(conn)
+                    self._send_json({
+                        "total": total or 0,
+                        "recall_total": recall_sum or 0,
+                        "recall_max": recall_max or 0,
+                        "hot_24h": hot_24h or 0,
+                    })
+                except Exception as e:
+                    self._send_json({"error": str(e)}, 500)
             else:
                 self._send_json({"error": "not found"}, 404)
 
@@ -271,9 +289,6 @@ def _ollama_safe_call(fn, *args, **kwargs):
         _ollama_queue.get()  # 出队，释放队列空间
 
 # ── Embedding：FastEmbed（BAAI/bge-small-zh-v1.5，512维）────────
-_fastembed_model = None
-_fastembed_lock = threading.Lock()
-
 def _get_fastembed_model():
     global _fastembed_model
     if _fastembed_model is None:
@@ -300,7 +315,6 @@ def generate_vector(text: str) -> list[float]:
             return _fa_cache[key]
         global _fastembed_model
         if _fastembed_model is None:
-            os.environ["HF_HUB_PROXY"] = "http://127.0.0.1:7890"
             from fastembed import TextEmbedding
             _fastembed_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
     arr = list(_fastembed_model.embed([text]))[0]
@@ -342,7 +356,7 @@ def _ollama_generate(prompt: str) -> str:
             return json.loads(resp.read()).get("response", "").strip()
     except Exception as _e:
         logger.warning(f"Ollama API 调用失败: {_e}")
-        return 
+        return ""
 
 
 # ── LRU 缓存的查询扩展 ─────────────────────────────────────
@@ -580,7 +594,7 @@ def cmd_dedup() -> dict:
             FROM mem0
             WHERE id != %s
               AND source = 'memory'
-              AND vector <=> %s::vector < 0.15
+              AND vector <=> %s::vector < COSINE_DIST_MERGE
             ORDER BY vector <=> %s::vector
             LIMIT 5
         """, (old_vec_list, old_id, old_vec_list, old_vec_list))
@@ -609,7 +623,7 @@ def cmd_dedup() -> dict:
                 cand_text = cand_payload.get('data', '')
                 keep_id = old_id if len(old_text) >= len(cand_text) else cand_id
                 del_id = cand_id if keep_id == old_id else old_id
-            elif cos_dist < COSINE_DIST_MERGE and time_diff_hours > 1:
+            elif cos_dist < COSINE_DIST_MERGE and time_diff_hours > DEDUP_WINDOW_HOURS:
                 # 时间差大但语义近似，保留较新的
                 keep_id = old_id if t_old > t_cand else cand_id
                 del_id = cand_id if keep_id == old_id else old_id

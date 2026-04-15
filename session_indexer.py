@@ -9,21 +9,30 @@ from datetime import datetime
 
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
 
+# ── 配置（统一从环境变量读取，与 memory_layer.py 一致）───────────────
 MEMORY_DB = {
     "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
-    "port": int(os.getenv("MEMORY_DB_PORT", "5432")),
+    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),  # 修正
     "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "postgres"),
-    "password": os.getenv("MEMORY_DB_PASS", ""),
+    "user": os.getenv("MEMORY_DB_USER", "openclaw"),   # 修正
+    "password": os.getenv("MEMORY_DB_PASS", "naZytYn2hKsy"),
 }
 
+# ── 向量生成（全局单例）─────────────────────────────────────────────
+_embedding_model = None
+_embedding_lock = __import__("threading").Lock()
+
 def get_embedding(text: str) -> list:
-    hf_proxy = os.getenv("HF_HUB_PROXY", "")
-    if hf_proxy:
-        os.environ["HF_HUB_PROXY"] = hf_proxy
-    from fastembed import TextEmbedding
-    model = TextEmbedding("BAAI/bge-small-zh-v1.5")
-    arr = list(model.embed([text]))[0]
+    global _embedding_model
+    if _embedding_model is None:
+        with _embedding_lock:
+            if _embedding_model is None:
+                hf_proxy = os.getenv("HF_HUB_PROXY", "")
+                if hf_proxy:
+                    os.environ["HF_HUB_PROXY"] = hf_proxy
+                from fastembed import TextEmbedding
+                _embedding_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
+    arr = list(_embedding_model.embed([text]))[0]
     return [float(x) for x in arr]
 
 def is_duplicate(source_id: str) -> bool:
@@ -43,42 +52,40 @@ def save_fragment(text: str, session_id: str, source_id: str) -> str:
     conn = psycopg2.connect(**MEMORY_DB)
     cur = conn.cursor()
     payload = json.dumps({
-        "data": text[:500],  # 限制长度
+        "data": text[:500],
         "user_id": "会话",
         "source": "session",
         "session_id": session_id,
         "source_id": source_id
     })
+    # 修复：移除 fts 手动插入，由数据库生成列自动计算
     cur.execute("""
-        INSERT INTO mem0 (id, vector, payload, fts)
-        VALUES (%s, %s::vector, %s::jsonb, to_tsvector('simple', %s))
-    """, (pid, vec, payload, text))
+        INSERT INTO mem0 (id, vector, payload)
+        VALUES (%s, %s::vector, %s::jsonb)
+    """, (pid, vec, payload))
     conn.commit()
     cur.close()
     conn.close()
     return pid
 
-def index_sessions():
+def index_sessions(dry_run: bool = False):
     files = glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl"))
     print(f"找到 {len(files)} 个 session 文件")
     saved = 0
-    for path in sorted(files, key=os.path.getmtime, reverse=True)[:10]:  # 最近10个
+    for path in sorted(files, key=os.path.getmtime, reverse=True)[:10]:
         session_id = os.path.basename(path).replace(".jsonl", "")
         try:
             with open(path, encoding="utf-8") as f:
                 messages = [json.loads(l) for l in f if l.strip()]
             for i, msg in enumerate(messages):
-                # 支持两种格式: 1) 扁平 {role, content}  2) 嵌套 {type: 'message', message: {role, content}}
-                inner = msg.get("message", msg)  # 兼容嵌套格式
+                inner = msg.get("message", msg)
                 role = inner.get("role", "")
                 if role != "assistant":
                     continue
-                # content 可能是字符串或内容块列表
                 raw_content = inner.get("content", "")
                 if isinstance(raw_content, str):
                     content = raw_content
                 elif isinstance(raw_content, list):
-                    # 提取 text 类型的文本块
                     parts = []
                     for block in raw_content:
                         if isinstance(block, dict):
@@ -94,24 +101,29 @@ def index_sessions():
                 source_id = f"{session_id}_{i}"
                 if is_duplicate(source_id):
                     continue
-                pid = save_fragment(content, session_id, source_id)
+                if dry_run:
+                    print(f"  [dry-run] 应写入: {content[:50]}...")
+                else:
+                    pid = save_fragment(content, session_id, source_id)
                 saved += 1
                 if saved % 50 == 0:
                     print(f"  已处理 {saved} 个片段...")
         except Exception as e:
             print(f"  ⚠️  处理失败 {path}: {e}")
-    print(f"✅ 索引完成: 新增 {saved} 个片段")
+    action = "扫描" if dry_run else "索引"
+    print(f"✅ {action}完成: 新增 {saved} 个片段")
     return saved
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="SinoVec 会话索引")
     sub = parser.add_subparsers(dest="cmd")
-    sub.add_parser("index", help="索引会话历史")
+    index_parser = sub.add_parser("index", help="索引会话历史")
+    index_parser.add_argument("--dry-run", action="store_true", help="仅扫描，不写入数据库")
     sub.add_parser("check", help="检查索引状态")
     args = parser.parse_args()
     if args.cmd == "index":
-        index_sessions()
+        index_sessions(dry_run=getattr(args, 'dry_run', False))
     elif args.cmd == "check":
         import psycopg2
         conn = psycopg2.connect(**MEMORY_DB)
