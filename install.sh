@@ -173,7 +173,7 @@ MEMORY_DB_PASS=$DB_PASS
 # HF_HUB_PROXY=http://127.0.0.1:7890
 EOF
 
-# ── 生成 systemd service 文件 ───────────────────────────────
+# ── 生成 systemd service 文件（路径直接写死）─────────────────
 echo "配置 systemd 服务..."
 cat > /etc/systemd/system/memory_layer.service << EOF
 [Unit]
@@ -183,9 +183,9 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=\${SINOVEC_HOME}
+WorkingDirectory=$PREFIX
 EnvironmentFile=-/etc/default/sinovec
-ExecStart=$PYTHON_CMD \${SINOVEC_HOME}/memory_layer.py serve --host 127.0.0.1 --port 18793
+ExecStart=$PYTHON_CMD $PREFIX/memory_layer.py serve --host 127.0.0.1 --port 18793
 Restart=always
 RestartSec=10
 
