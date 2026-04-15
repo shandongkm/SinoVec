@@ -80,6 +80,7 @@ curl http://127.0.0.1:18793/stats
 | `MEMORY_DB_NAME` | 数据库名 | memory |
 | `MEMORY_DB_USER` | 数据库用户 | openclaw |
 | `MEMORY_DB_PASS` | 数据库密码 | (必填) |
+| `MEMORY_API_KEY` | API 认证密钥（可选）。若设置，所有 API 请求（除 `/health`）必须携带密钥。支持 `Authorization: Bearer <key>`、`X-API-Key: <key>`、`?api_key=<key>` 三种方式 | 不设置则跳过认证（仅开发环境） |
 | `HF_HUB_PROXY` | HuggingFace 代理 | (可选) |
 
 ## 🔌 与 OpenClaw 集成
@@ -165,7 +166,9 @@ python session_indexer.py index --dry-run
 
 ## 🛡️ 安全提示
 
+- **生产环境务必设置 `MEMORY_API_KEY`**，否则 API 服务完全开放，任何人都可读取记忆
 - **不要将 API 服务暴露到公网**
+- `MEMORY_DB_PASS` 环境变量必须设置，否则服务拒绝启动
 - 数据库密码使用强密码
 - 定期备份数据库
 

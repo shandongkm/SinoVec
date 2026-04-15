@@ -30,8 +30,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
+
+from cachetools import TTLCache
 
 import psycopg2
 import numpy as np
@@ -98,41 +101,52 @@ OLLAMA_MAX_TOKENS  = int(_E("MEM_OLLAMA_MAX_TOKENS",   "500"))
 
 # ── DB 配置 ──────────────────────────────────────────────
 # ── 配置（支持环境变量覆盖）─────────────────────────────────────
+_db_pass = os.getenv("MEMORY_DB_PASS", "")
+if not _db_pass:
+    raise RuntimeError(
+        "MEMORY_DB_PASS environment variable is not set. "
+        "Please set it and restart. "
+        "Example: export MEMORY_DB_PASS=your_secure_password"
+    )
 DB_CONFIG = {
     "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
     "port": int(os.getenv("MEMORY_DB_PORT", "5433")),
     "database": os.getenv("MEMORY_DB_NAME", "memory"),
     "user": os.getenv("MEMORY_DB_USER", "openclaw"),
-    "password": os.getenv("MEMORY_DB_PASS", "naZytYn2hKsy"),
+    "password": _db_pass,
 }
 
-# ── 连接池 ──────────────────────────────────────────────────────
+# ── 连接池（线程安全）────────────────────────────────────────────
 _db_pool = None
+_pool_lock = threading.Lock()
 
 def _get_pool():
     global _db_pool
     if _db_pool is None:
-        from psycopg2.pool import SimpleConnectionPool
-        _db_pool = SimpleConnectionPool(1, 20, **DB_CONFIG)
-        logger.info("DB 连接池已初始化（1-20连接）")
-        # 预热：获取并归还一个连接，消除首次查询延迟
-        try:
-            _warm = _db_pool.getconn()
-            _warm.cursor().execute("SELECT 1")
-            _warm.cursor().close()
-            _db_pool.putconn(_warm)
-            logger.info("DB 连接池预热完成")
-        except Exception as _e:
-            logger.warning(f"连接池预热失败: {_e}")
+        with _pool_lock:
+            if _db_pool is None:
+                from psycopg2.pool import SimpleConnectionPool
+                _db_pool = SimpleConnectionPool(1, 20, **DB_CONFIG)
+                logger.info("DB 连接池已初始化（1-20连接）")
+                # 预热
+                try:
+                    _warm = _db_pool.getconn()
+                    _warm.cursor().execute("SELECT 1")
+                    _warm.cursor().close()
+                    _db_pool.putconn(_warm)
+                    logger.info("DB 连接池预热完成")
+                except Exception as _e:
+                    logger.warning(f"连接池预热失败: {_e}")
     return _db_pool
 
+@contextmanager
 def get_conn():
-    """从连接池获取连接"""
-    return _get_pool().getconn()
-
-def put_conn(conn):
-    """归还连接到连接池"""
-    _get_pool().putconn(conn)
+    """从连接池获取连接，自动归还（防止连接泄漏）"""
+    conn = _get_pool().getconn()
+    try:
+        yield conn
+    finally:
+        _get_pool().putconn(conn)
 
 
 # ── 工作区路径（可环境变量覆盖）──────────────────────────────────
@@ -188,7 +202,33 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
         daemon_threads = True
 
     class MemoryHandler(BaseHTTPRequestHandler):
+        def _check_auth(self) -> bool:
+            """校验 API Key，支持 Bearer token、X-API-Key 或 ?api_key= 参数"""
+            expected = os.getenv("MEMORY_API_KEY", "")
+            if not expected:
+                return True  # 未配置则跳过验证（开发模式）
+            # 1. Authorization: Bearer <key>
+            auth_header = self.headers.get("Authorization", "")
+            token = auth_header.replace("Bearer ", "").strip()
+            if token == expected:
+                return True
+            # 2. X-API-Key: <key>
+            token = self.headers.get("X-API-Key", "").strip()
+            if token == expected:
+                return True
+            # 3. ?api_key=<key>
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            token = params.get("api_key", [None])[0] or ""
+            if token == expected:
+                return True
+            return False
+
         def do_GET(self):
+            # 健康检查不需要认证
+            if self.path != "/health" and not self._check_auth():
+                self._send_json({"error": "unauthorized"}, 401)
+                return
             parsed = urlparse(self.path)
             if parsed.path == "/health":
                 self._send_json({"status": "ok"})
@@ -291,26 +331,12 @@ def _ollama_safe_call(fn, *args, **kwargs):
         _ollama_queue.get()  # 出队，释放队列空间
 
 # ── Embedding：FastEmbed（BAAI/bge-small-zh-v1.5，512维）────────
-def _get_fastembed_model():
-    global _fastembed_model
-    if _fastembed_model is None:
-        with _fastembed_lock:
-            if _fastembed_model is None:  # double-checked locking
-                from fastembed import TextEmbedding
-                cache_dir = os.environ.get("FASTEMBED_CACHE_DIR", os.path.expanduser("~/.cache/fastembed"))
-                _fastembed_model = TextEmbedding(
-                    "BAAI/bge-small-zh-v1.5",
-                    cache_dir=cache_dir
-                )
-                logger.info("Embedding 后端: FastEmbed (BAAI/bge-small-zh-v1.5)")
-    return _fastembed_model
-
 _fastembed_model = None
 _fastembed_lock = threading.Lock()
-_fa_cache = {}
+_fa_cache = TTLCache(maxsize=1000, ttl=3600)  # 最多1000条，1小时过期
 
 def generate_vector(text: str) -> list[float]:
-    """通过 FastEmbed BAAI/bge-small-zh-v1.5 生成 512 维 embedding（本地推理，走 mihomo 代理下载）"""
+    """通过 FastEmbed BAAI/bge-small-zh-v1.5 生成 512 维 embedding（本地推理）"""
     key = text[:80]
     with _fastembed_lock:
         if key in _fa_cache:
@@ -318,11 +344,12 @@ def generate_vector(text: str) -> list[float]:
         global _fastembed_model
         if _fastembed_model is None:
             from fastembed import TextEmbedding
-            _fastembed_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
+            cache_dir = os.environ.get("FASTEMBED_CACHE_DIR", os.path.expanduser("~/.cache/fastembed"))
+            _fastembed_model = TextEmbedding("BAAI/bge-small-zh-v1.5", cache_dir=cache_dir)
+            logger.info("Embedding 后端: FastEmbed (BAAI/bge-small-zh-v1.5)")
     arr = list(_fastembed_model.embed([text]))[0]
     emb = [float(x) for x in arr]
-    with _fastembed_lock:
-        _fa_cache[key] = emb
+    _fa_cache[key] = emb
     return emb
 
 

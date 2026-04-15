@@ -10,12 +10,19 @@ from datetime import datetime
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
 
 # ── 配置（统一从环境变量读取，与 memory_layer.py 一致）───────────────
+_db_pass = os.getenv("MEMORY_DB_PASS", "")
+if not _db_pass:
+    raise RuntimeError(
+        "MEMORY_DB_PASS environment variable is not set. "
+        "Please set it before running. "
+        "Example: export MEMORY_DB_PASS=your_secure_password"
+    )
 MEMORY_DB = {
     "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
-    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),  # 修正
+    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),
     "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "openclaw"),   # 修正
-    "password": os.getenv("MEMORY_DB_PASS", "naZytYn2hKsy"),
+    "user": os.getenv("MEMORY_DB_USER", "openclaw"),
+    "password": _db_pass,
 }
 
 # ── 向量生成（全局单例）─────────────────────────────────────────────
