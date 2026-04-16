@@ -44,10 +44,11 @@ pytest tests/ -v
 
 ```
 SinoVec/
-├── memory_layer.py       # 核心服务
-├── extract_memories.py   # 记忆提取
-├── session_indexer.py   # 会话索引
-├── schema.sql          # 数据库结构
+├── memory_sinovec.py          # 核心服务
+├── extract_memories_sinovec.py   # 记忆提取
+├── session_indexer_sinovec.py   # 会话索引
+├── common.py               # 公共模块
+├── rebuild_memory_sinovec.sql     # 数据库结构
 └── tests/              # 测试文件
 ```
 

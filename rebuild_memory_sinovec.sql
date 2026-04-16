@@ -5,7 +5,7 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 记忆主表
-CREATE TABLE IF NOT EXISTS mem0 (
+CREATE TABLE IF NOT EXISTS sinovec (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     vector          vector(512) NOT NULL,
     payload         JSONB NOT NULL,
@@ -24,27 +24,27 @@ CREATE TABLE IF NOT EXISTS mem0 (
 );
 
 -- 向量索引（IVFFlat，适合 1万~100万数据量）
-CREATE INDEX IF NOT EXISTS idx_mem0_vector
-    ON mem0 USING ivfflat (vector vector_cosine_ops)
+CREATE INDEX IF NOT EXISTS idx_sinovec_vector
+    ON sinovec USING ivfflat (vector vector_cosine_ops)
     WITH (lists = 100);
 
 -- 全文检索索引
-CREATE INDEX IF NOT EXISTS idx_mem0_fts
-    ON mem0 USING gin (fts);
+CREATE INDEX IF NOT EXISTS idx_sinovec_fts
+    ON sinovec USING gin (fts);
 
 -- payload JSONB 属性索引
-CREATE INDEX IF NOT EXISTS idx_mem0_source
-    ON mem0 (source);
-CREATE INDEX IF NOT EXISTS idx_mem0_created
-    ON mem0 (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_mem0_access
-    ON mem0 (access_count DESC);
-CREATE INDEX IF NOT EXISTS idx_mem0_recall
-    ON mem0 (recall_count ASC);
+CREATE INDEX IF NOT EXISTS idx_sinovec_source
+    ON sinovec (source);
+CREATE INDEX IF NOT EXISTS idx_sinovec_created
+    ON sinovec (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sinovec_access
+    ON sinovec (access_count DESC);
+CREATE INDEX IF NOT EXISTS idx_sinovec_recall
+    ON sinovec (recall_count ASC);
 
 -- 用户 ID 索引（支持多用户隔离查询）
-CREATE INDEX IF NOT EXISTS idx_mem0_user_id
-    ON mem0 ((payload->>'user_id'));
+CREATE INDEX IF NOT EXISTS idx_sinovec_user_id
+    ON sinovec ((payload->>'user_id'));
 
 -- 自动更新 updated_at 触发器
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -55,9 +55,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS mem0_updated_at ON mem0;
-CREATE TRIGGER mem0_updated_at
-    BEFORE UPDATE ON mem0
+DROP TRIGGER IF EXISTS sinovec_updated_at ON sinovec;
+CREATE TRIGGER sinovec_updated_at
+    BEFORE UPDATE ON sinovec
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 

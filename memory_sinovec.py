@@ -25,11 +25,11 @@ import hashlib
 import hmac
 import argparse
 import logging
+import requests
 
 # 模型下载代理（mihomo）
 os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7890")
 os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7890")
-import os
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -117,7 +117,7 @@ DB_CONFIG = {
     "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
     "port": int(os.getenv("MEMORY_DB_PORT", "5433")),
     "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "openclaw"),
+    "user": os.getenv("MEMORY_DB_USER", "sinovec"),
     "password": _db_pass,
 }
 
@@ -211,7 +211,7 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
             """校验 API Key，支持 Bearer token、X-API-Key 或 ?api_key= 参数"""
             expected = os.getenv("MEMORY_API_KEY", "")
             if not expected:
-                return True  # 未配置则跳过验证（开发模式）
+                return self.path == "/health"  # 只有 /health 允许无认证
             # 1. Authorization: Bearer <key>
             auth_header = self.headers.get("Authorization", "")
             token = auth_header.replace("Bearer ", "").strip()
@@ -259,12 +259,16 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
             elif parsed.path == "/stats":
                 try:
                     with get_conn() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM mem0 WHERE source = 'memory'")
-                        total, recall_sum, recall_max = cur.fetchone()
-                        cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'memory' AND last_access_time > NOW() - INTERVAL '24 hours'")
-                        hot_24h = cur.fetchone()[0]
-                        cur.close()
+                        cur = None
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM sinovec WHERE source = 'memory'")
+                            total, recall_sum, recall_max = cur.fetchone()
+                            cur.execute("SELECT COUNT(*) FROM sinovec WHERE source = 'memory' AND last_access_time > NOW() - INTERVAL '24 hours'")
+                            hot_24h = cur.fetchone()[0]
+                        finally:
+                            if cur is not None:
+                                cur.close()
                     self._send_json({
                         "total": total or 0,
                         "recall_total": recall_sum or 0,
@@ -330,7 +334,6 @@ def _ollama_safe_call(fn, *args, **kwargs):
             except Exception as e:
                 logger.warning(f"ollama 调用失败: {e}，返回降级结果")
                 return None  # fallback
-            pass
     finally:
         _ollama_queue.get()  # 出队，释放队列空间
 
@@ -347,6 +350,9 @@ def generate_vector(text: str) -> list[float]:
             return _fa_cache[key]
         global _fastembed_model
         if _fastembed_model is None:
+            hf_proxy = os.getenv("HF_HUB_PROXY", "")
+            if hf_proxy:
+                os.environ["HF_HUB_PROXY"] = hf_proxy
             from fastembed import TextEmbedding
             cache_dir = os.environ.get("FASTEMBED_CACHE_DIR", os.path.expanduser("~/.cache/fastembed"))
             _fastembed_model = TextEmbedding("BAAI/bge-small-zh-v1.5", cache_dir=cache_dir)
@@ -552,20 +558,19 @@ def _increment_access(mem_ids: list) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         cur = conn.cursor()
-    try:
-        cur.execute("""
-            UPDATE mem0
-            SET access_count = access_count + 1,
-                last_access_time = %s,
-                recall_count = recall_count + 1
-            WHERE id = ANY(%s::uuid[])
-        """, (now, [str(m) for m in mem_ids]))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        cur.close()
-        put_conn(conn)
+        try:
+            cur.execute("""
+                UPDATE sinovec
+                SET access_count = access_count + 1,
+                    last_access_time = %s,
+                    recall_count = recall_count + 1
+                WHERE id = ANY(%s::uuid[])
+            """, (now, [str(m) for m in mem_ids]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            cur.close()
 
 
 # ── 语义+时效去重 ──────────────────────────────────────────
@@ -577,19 +582,17 @@ def cmd_dedup() -> dict:
     3. 用 pgvector 的 <=> 算距离，不重复计算 similarity
     """
     with get_conn() as conn:
-        cur = None
-    try:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT id, vector, payload, payload->>'created_at' as created_at
-            FROM mem0
-            WHERE source = 'memory'
-            ORDER BY payload->>'created_at' DESC
-            LIMIT 200
-        """)
-        rows = cur.fetchall()
-    finally:
-        if cur is not None:
+        try:
+            cur.execute("""
+                SELECT id, vector, payload, payload->>'created_at' as created_at
+                FROM sinovec
+                WHERE source = 'memory'
+                ORDER BY payload->>'created_at' DESC
+                LIMIT 200
+            """)
+            rows = cur.fetchall()
+        finally:
             cur.close()
 
     merged = 0
@@ -611,21 +614,24 @@ def cmd_dedup() -> dict:
             t_old = datetime.min.replace(tzinfo=timezone.utc)
 
         # 找 cosine_dist < COSINE_DIST_MERGE 的相似记忆
-        conn2 = get_conn()
-        cur2 = conn2.cursor()
-        cur2.execute("""
-            SELECT id, vector, payload, payload->>'created_at' as created_at,
-                   vector <=> %s::vector AS cosine_dist
-            FROM mem0
-            WHERE id != %s
-              AND source = 'memory'
-              AND vector <=> %s::vector < COSINE_DIST_MERGE
-            ORDER BY vector <=> %s::vector
-            LIMIT 5
-        """, (old_vec_list, old_id, old_vec_list, old_vec_list))
-        candidates = cur2.fetchall()
-        cur2.close()
-        put_conn(conn2)
+        with get_conn() as conn2:
+            cur2 = None
+            try:
+                cur2 = conn2.cursor()
+                cur2.execute("""
+                    SELECT id, vector, payload, payload->>'created_at' as created_at,
+                           vector <=> %s::vector AS cosine_dist
+                    FROM sinovec
+                    WHERE id != %s
+                      AND source = 'memory'
+                      AND vector <=> %s::vector < COSINE_DIST_MERGE
+                    ORDER BY vector <=> %s::vector
+                    LIMIT 5
+                """, (old_vec_list, old_id, old_vec_list, old_vec_list))
+                candidates = cur2.fetchall()
+            finally:
+                if cur2 is not None:
+                    cur2.close()
 
         for cand in candidates:
             cand_id, cand_vec, cand_payload, cand_created_at, cos_dist = cand
@@ -660,12 +666,10 @@ def cmd_dedup() -> dict:
                 continue
 
             try:
-                conn3 = get_conn()
-                cur3 = conn3.cursor()
-                cur3.execute("DELETE FROM mem0 WHERE id = %s", (str(del_id),))
-                conn3.commit()
-                cur3.close()
-                put_conn(conn3)
+                with get_conn() as conn3:
+                    cur3 = conn3.cursor()
+                    cur3.execute("DELETE FROM sinovec WHERE id = %s", (str(del_id),))
+                    conn3.commit()
                 _log_lineage(str(del_id), "merge",
                              reason=f"cos_dist={cos_dist:.3f} time_diff={time_diff_hours:.1f}h, 保留{keep_id}",
                              target_id=keep_id)
@@ -681,7 +685,7 @@ def cmd_dedup() -> dict:
 
 def _build_clusters(conn, cur, threshold: float) -> tuple:
     """构建所有记忆的向量相似簇。返回 (clusters: list[set], all_rows)"""
-    cur.execute("SELECT id, vector, payload->>'data' FROM mem0")
+    cur.execute("SELECT id, vector, payload->>'data' FROM sinovec")
     all_rows = cur.fetchall()
     print(f"📊 共 {len(all_rows)} 条记忆，开始向量最近邻搜索...")
     clusters, processed = [], set()
@@ -695,7 +699,7 @@ def _build_clusters(conn, cur, threshold: float) -> tuple:
         try:
             cur.execute("""
                 SELECT id, vector <=> %s::vector as dist, payload->>'data' as data
-                FROM mem0 WHERE id != %s
+                FROM sinovec WHERE id != %s
                 ORDER BY vector <=> %s::vector LIMIT 20
             """, (vec_str, mid, vec_str))
             neighbors = cur.fetchall()
@@ -722,7 +726,7 @@ def _select_deletions(conn, cur, clusters: list) -> list:
             continue
         cur.execute("""
             SELECT id, length(payload->>'data') as llen
-            FROM mem0 WHERE id = ANY(%s::uuid[])
+            FROM sinovec WHERE id = ANY(%s::uuid[])
             ORDER BY length(payload->>'data') DESC
         """, ([str(m) for m in cluster],))
         for j, (cid, _) in enumerate(cur.fetchall()):
@@ -742,7 +746,7 @@ def _preview_clusters(conn, cur, clusters: list, shown: int = 5) -> int:
             continue
         cur.execute("""
             SELECT id, left(payload->>'data', 60), length(payload->>'data')
-            FROM mem0 WHERE id = ANY(%s::uuid[])
+            FROM sinovec WHERE id = ANY(%s::uuid[])
             ORDER BY length(payload->>'data') DESC
         """, ([str(m) for m in cluster],))
         members = cur.fetchall()
@@ -760,147 +764,49 @@ def cmd_dedup_deep(threshold: float = COSINE_DIST_DEEP, dry_run: bool = True) ->
     threshold: 向量距离阈值，默认 0.1（约=cosine相似度0.9）
     dry_run: True=仅报告，False=执行删除
     """
-
-    conn = None
-    cur = None
-    try:
-        with get_conn() as conn:
-            cur = conn.cursor()
+    with get_conn() as conn:
+        cur = None
         try:
-            cur.execute("SELECT id, vector, payload->>'data' FROM mem0")
+            cur = conn.cursor()
+            cur.execute("SELECT id, vector, payload->>'data' FROM sinovec")
             all_rows = cur.fetchall()
-        except psycopg2.Error as e:
-            logger.error(f"加载记忆列表失败: {e}")
-            return {"error": str(e)}
+            clusters, _ = _build_clusters(conn, cur, threshold)
+            to_delete = _select_deletions(conn, cur, clusters)
+            _preview_clusters(conn, cur, clusters, shown=5)
+        finally:
+            if cur is not None:
+                cur.close()
 
-        clusters, _ = _build_clusters(conn, cur, threshold)
-        to_delete = _select_deletions(conn, cur, clusters)
-        dup_groups = sum(1 for c in clusters if len(c) > 1)
-        print(f"\n🔍 发现 {len(clusters)} 个簇，其中 {dup_groups} 个含重复")
-        print(f"📋 建议删除：{len(to_delete)} 条")
+    dup_groups = sum(1 for c in clusters if len(c) > 1)
+    print(f"\n🔍 发现 {len(clusters)} 个簇，其中 {dup_groups} 个含重复")
+    print(f"📋 建议删除：{len(to_delete)} 条")
 
-        _preview_clusters(conn, cur, clusters, shown=5)
+    if dry_run:
+        print("\n⚠️ dry_run=True，未执行删除。加 --no-dry-run 执行实际删除")
+        return {"clusters": len(clusters), "to_delete": len(to_delete), "dry_run": True}
 
-        if dry_run:
-            print(f"\n⚠️ dry_run=True，未执行删除。加 --no-dry-run 执行实际删除")
-            return {"clusters": len(clusters), "to_delete": len(to_delete), "dry_run": True}
-
-        if to_delete:
+    if to_delete:
+        with get_conn() as conn2:
+            cur2 = None
             try:
-                cur.executemany(
-                    "DELETE FROM mem0 WHERE id = %s",
+                cur2 = conn2.cursor()
+                cur2.executemany(
+                    "DELETE FROM sinovec WHERE id = %s",
                     [(mid,) for mid in to_delete]
                 )
-                conn.commit()
+                conn2.commit()
                 print(f"\n✅ 已删除 {len(to_delete)} 条重复记忆")
             except psycopg2.Error as e:
                 print(f"\n❌ 删除失败（可能是外键依赖）：{e}")
-                conn.rollback()
-        else:
-            print("\n✅ 无重复可删")
+                conn2.rollback()
+            finally:
+                if cur2 is not None:
+                    cur2.close()
+    else:
+        print("\n✅ 无重复可删")
 
-        return {"clusters": len(clusters), "deleted": len(to_delete), "dry_run": False}
-    finally:
-        if cur is not None:
-            cur.close()
+    return {"clusters": len(clusters), "deleted": len(to_delete), "dry_run": False}
 
-
-# ── 访问热度流转 ────────────────────────────────────────────
-def cmd_promote_by_heat() -> dict:
-    """
-    按访问热度将 L1 记忆晋赚到 L2 文件层（带去重）：
-    - HOT: access_count 最高的前 10%
-    - WARM: 中间 60%
-    - COLD: 后 30%
-    - 已在 L2 的记忆跳过（payload.promoted_layer 判断）
-    - 晋升后在 L1 标记 promoted_layer
-    """
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, vector, payload,
-               COALESCE(access_count, 0) as ac,
-               last_access_time,
-               (COALESCE(access_count, 0) + 1) /
-                 (EXTRACT(EPOCH FROM (NOW() - COALESCE(last_access_time, NOW()))) / 3600 + 1)
-               as heat_score
-        FROM mem0
-        WHERE source = 'memory'
-          AND (payload->>'promoted_layer') IS NULL
-          AND last_access_time < NOW() - INTERVAL '1 hour'
-        ORDER BY heat_score DESC
-        LIMIT 100
-    """)
-    rows = cur.fetchall()
-    total = len(rows)
-    cur.close()
-    put_conn(conn)
-
-    if total == 0:
-        return {"total": 0, "promoted": {"HOT": 0, "WARM": 0, "COLD": 0}, "skipped": 0}
-
-    hot_count = max(1, int(total * HOT_RATIO))
-    warm_count = max(1, int(total * WARM_RATIO))
-
-    promoted = {"HOT": 0, "WARM": 0, "COLD": 0}
-    skipped = 0
-
-    for i, (mem_id, vec, payload, ac, lat, hs) in enumerate(rows):
-        if i < hot_count:
-            layer = "HOT"
-        elif i < hot_count + warm_count:
-            layer = "WARM"
-        else:
-            layer = "COLD"
-
-        text = payload.get('data', '')
-        if not text:
-            skipped += 1
-            continue
-        user = payload.get('user_id', '主人')
-        timestamp = payload.get('created_at', datetime.now(timezone.utc).isoformat())
-
-        # 写入 L2 文件（带晋升标记，避免重复追加）
-        l2_file = Path(f"{_WORKSPACE_ENV}/memory/{layer}.md")
-        # 确保父目录存在（文件不存在时也尝试创建）
-        l2_file.parent.mkdir(parents=True, exist_ok=True)
-        # 按文本内容去重
-        existing_texts = set()
-        if l2_file.exists():
-            with _locked_open(l2_file, "r", "utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("- ["):
-                        m = re.match(r"- \[\d{4}-\d{2}-\d{2}[^\]]*\] \[[^\]]*\] (.+)", line)
-                        if m:
-                            existing_texts.add(m.group(1))
-        if text in existing_texts:
-            skipped += 1
-        else:
-            entry = f"- [{timestamp[:10]}] [{user}] {text}\n"
-            with _locked_open(l2_file, "a", "utf-8") as f:
-                f.write(entry)
-            promoted[layer] += 1
-
-        # 在 L1 标记已晋升（不删除，保留向量检索能力）
-        conn2 = get_conn()
-        cur2 = conn2.cursor()
-        updated_payload = dict(payload)
-        updated_payload['promoted_layer'] = layer
-        updated_payload['promoted_at'] = datetime.now(timezone.utc).isoformat()
-        cur2.execute("""
-            UPDATE mem0 SET payload = %s
-            WHERE id = %s
-        """, (json.dumps(updated_payload), mem_id))
-        conn2.commit()
-        cur2.close()
-        put_conn(conn2)
-
-    return {"total": total, "promoted": promoted, "skipped": skipped}
-
-
-# ── 每日整理命令 ──────────────────────────────────────────
-# ── L2 层记忆文件操作 ────────────────────────────────────────
 
 def _read_layer_entries(layer_file: Path) -> list[tuple]:
     """读取层记忆文件，返回 (原始行, 日期字符串, 文本内容) 列表"""
@@ -956,6 +862,16 @@ def _append_layer_entries_dedup(layer_file: Path, new_lines: list) -> int:
             f.write(line.strip() + "\n")
             added += 1
     return added
+
+
+def cmd_promote_by_heat() -> dict:
+    """
+    按访问热度流转（已废弃，请使用 cmd_organize）
+    保留此函数仅为 CLI 向后兼容。
+    """
+    import logging
+    logging.warning("`promote-heat` 命令已废弃，请使用 `organize` 代替")
+    return cmd_organize()
 
 
 def cmd_organize() -> dict:
@@ -1169,7 +1085,7 @@ def _vector_search(cur, vec, top_k: int, user_id: str = None) -> list:
     if user_id:
         cur.execute("""
             SELECT id, vector, vector <=> %s::vector AS vec_dist, payload
-            FROM mem0
+            FROM sinovec
             WHERE payload->>'user_id' = %s
             ORDER BY vector <=> %s::vector
             LIMIT %s
@@ -1177,7 +1093,7 @@ def _vector_search(cur, vec, top_k: int, user_id: str = None) -> list:
     else:
         cur.execute("""
             SELECT id, vector, vector <=> %s::vector AS vec_dist, payload
-            FROM mem0
+            FROM sinovec
             ORDER BY vector <=> %s::vector
             LIMIT %s
         """, (vec, vec, top_k))
@@ -1200,7 +1116,7 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         if user_id:
             cur.execute("""
                 SELECT id, GREATEST(ts_rank_cd(fts, query), 0.001) AS bm25_rank, payload
-                FROM mem0, to_tsquery('chinese_zh', %s) query
+                FROM sinovec, to_tsquery('chinese_zh', %s) query
                 WHERE fts @@ query AND payload->>'user_id' = %s
                 ORDER BY bm25_rank DESC
                 LIMIT %s
@@ -1208,7 +1124,7 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         else:
             cur.execute("""
                 SELECT id, GREATEST(ts_rank_cd(fts, query), 0.001) AS bm25_rank, payload
-                FROM mem0, to_tsquery('chinese_zh', %s) query
+                FROM sinovec, to_tsquery('chinese_zh', %s) query
                 WHERE fts @@ query
                 ORDER BY bm25_rank DESC
                 LIMIT %s
@@ -1222,14 +1138,14 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         if user_id:
             cur.execute(f"""
                 SELECT id, 0.3 AS bm25_rank, payload
-                FROM mem0
+                FROM sinovec
                 WHERE ({like_conditions}) AND payload->>'user_id' = %s
                 LIMIT %s
             """, like_values + [user_id, top_k])
         else:
             cur.execute(f"""
                 SELECT id, 0.3 AS bm25_rank, payload
-                FROM mem0
+                FROM sinovec
                 WHERE {like_conditions}
                 LIMIT %s
             """, like_values + [top_k])
@@ -1258,23 +1174,18 @@ def cmd_search(query: str, top_k: int = 5, use_rerank: bool = True, user_id: str
     all_terms = list(dict.fromkeys(raw_terms + expanded_terms))
 
     vec = generate_vector(query)
-    conn = None
-    cur = None
-    try:
-        with get_conn() as conn:
+    jieba_terms = _jieba_tokenize(query)
+    all_terms_str = list(dict.fromkeys(jieba_terms + all_terms))
+    tsquery_str = ' & '.join(all_terms_str) if all_terms_str else ''
+    with get_conn() as conn:
+        cur = None
+        try:
             cur = conn.cursor()
-
-        # 向量搜索
-        vec_rows = _vector_search(cur, vec, top_k, user_id=user_id)
-
-        # BM25 + ILIKE 搜索
-        jieba_terms = _jieba_tokenize(query)
-        all_terms_str = list(dict.fromkeys(jieba_terms + all_terms))
-        tsquery_str = ' & '.join(all_terms_str) if all_terms_str else ''
-        bm25_rows = _bm25_search(cur, tsquery_str, jieba_terms, top_k, user_id=user_id)
-    finally:
-        if cur is not None:
-            cur.close()
+            vec_rows = _vector_search(cur, vec, top_k, user_id=user_id)
+            bm25_rows = _bm25_search(cur, tsquery_str, jieba_terms, top_k, user_id=user_id)
+        finally:
+            if cur is not None:
+                cur.close()
 
 
     # 动态权重
@@ -1373,18 +1284,21 @@ def cmd_add(text: str, user: str = "主人", force: bool = False) -> str:
 
         # ③ DEDUP_WINDOW_HOURS 小时内重复写入（统一用 ISO 字符串比较）
         one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=DEDUP_WINDOW_HOURS)).isoformat()
-        conn_check = get_conn()
-        cur_check = conn_check.cursor()
-        cur_check.execute("""
-            SELECT id FROM mem0
-            WHERE payload->>'user_id' = %s
-              AND payload->>'data' = %s
-              AND payload->>'created_at' > %s
-            LIMIT 1
-        """, (user, content, one_hour_ago))
-        dup = cur_check.fetchone()
-        cur_check.close()
-        put_conn(conn_check)
+        with get_conn() as conn_check:
+            cur_check = None
+            try:
+                cur_check = conn_check.cursor()
+                cur_check.execute("""
+                    SELECT id FROM sinovec
+                    WHERE payload->>'user_id' = %s
+                      AND payload->>'data' = %s
+                      AND payload->>'created_at' > %s
+                    LIMIT 1
+                """, (user, content, one_hour_ago))
+                dup = cur_check.fetchone()
+            finally:
+                if cur_check is not None:
+                    cur_check.close()
         if dup:
             raise ValueError(f"DEDUP_WINDOW_HOURS 小时内已存在（id={dup[0][:8]}），用 --force 强制写入")
     # ── 质量门结束 ───────────────────────────────────────────────
@@ -1402,16 +1316,14 @@ def cmd_add(text: str, user: str = "主人", force: bool = False) -> str:
     }
 
     with get_conn() as conn:
-        cur = None
-    try:
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO mem0 (id, vector, payload) VALUES (%s, %s, %s)",
-            (mem_id, vec, json.dumps(payload)),
-        )
-        conn.commit()
-    finally:
-        if cur is not None:
+        try:
+            cur.execute(
+                "INSERT INTO sinovec (id, vector, payload) VALUES (%s, %s, %s)",
+                (mem_id, vec, json.dumps(payload)),
+            )
+            conn.commit()
+        finally:
             cur.close()
     return mem_id
 
@@ -1419,20 +1331,19 @@ def cmd_add(text: str, user: str = "主人", force: bool = False) -> str:
 def cmd_stats() -> dict:
     with get_conn() as conn:
         cur = None
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM mem0")
-        count = cur.fetchone()[0]
-        cur.execute("SELECT payload->>'user_id' AS u, COUNT(*) FROM mem0 GROUP BY u")
-        by_user = dict(cur.fetchall())
-        # recall 统计
-        cur.execute("SELECT SUM(recall_count), MAX(recall_count) FROM mem0 WHERE recall_count > 0")
-        recall_row = cur.fetchone()
-        cur.execute("SELECT COUNT(*) FROM mem0 WHERE recall_count > 0")
-        recall_hit = cur.fetchone()[0]
-    finally:
-        if cur is not None:
-            cur.close()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM sinovec")
+            count = cur.fetchone()[0]
+            cur.execute("SELECT payload->>'user_id' AS u, COUNT(*) FROM sinovec GROUP BY u")
+            by_user = dict(cur.fetchall())
+            cur.execute("SELECT SUM(recall_count), MAX(recall_count) FROM sinovec WHERE recall_count > 0")
+            recall_row = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM sinovec WHERE recall_count > 0")
+            recall_hit = cur.fetchone()[0]
+        finally:
+            if cur is not None:
+                cur.close()
     return {
         "total": count,
         "by_user": by_user,
@@ -1442,39 +1353,42 @@ def cmd_stats() -> dict:
     }
 
 
+
 def cmd_delete(mem_id: str) -> bool:
     _log_lineage(mem_id, "delete", reason="手动删除")
     with get_conn() as conn:
         cur = None
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM mem0 WHERE id = %s", (mem_id,))
-        deleted = cur.rowcount > 0
-        conn.commit()
-    finally:
-        if cur is not None:
-            cur.close()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM sinovec WHERE id = %s", (mem_id,))
+            deleted = cur.rowcount > 0
+            conn.commit()
+        finally:
+            if cur is not None:
+                cur.close()
     return deleted
+
 
 
 def cmd_list(limit: int = 20) -> list[dict]:
     with get_conn() as conn:
         cur = None
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id, payload->>'data' AS data,
-                   payload->>'user_id' AS user_id,
-                   payload->>'created_at' AS created_at
-            FROM mem0
-            ORDER BY payload->>'created_at' DESC
-            LIMIT %s
-        """, (limit,))
-        rows = cur.fetchall()
-    finally:
-        if cur is not None:
-            cur.close()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, payload->>'data' AS data,
+                       payload->>'user_id' AS user_id,
+                       payload->>'created_at' AS created_at
+                FROM sinovec
+                ORDER BY payload->>'created_at' DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+        finally:
+            if cur is not None:
+                cur.close()
     return [{"id": r[0], "data": r[1] or "", "user_id": r[2] or "", "created_at": r[3] or ""} for r in rows]
+
 
 
 def cmd_summarize(query: str, top_k: int = 5) -> dict:
@@ -1504,22 +1418,25 @@ def cmd_summarize(query: str, top_k: int = 5) -> dict:
 def cmd_recall_analysis(limit: int = 50) -> None:
     """分析 recall=0 的低价值记忆，输出内容供人工判断"""
     with get_conn() as conn:
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id, payload->>'data' as data,
-                   payload->>'user_id' as user_id,
-                   payload->>'created_at' as created_at,
-                   recall_count
-            FROM mem0
-            WHERE recall_count = 0
-            ORDER BY (payload->>'created_at')::timestamp DESC
-            LIMIT %s
-        """, (limit,))
-        rows = cur.fetchall()
-
-        cur.execute("SELECT count(*) FROM mem0 WHERE recall_count = 0")
-        total_zero = cur.fetchone()[0]
+        cur = None
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, payload->>'data' as data,
+                       payload->>'user_id' as user_id,
+                       payload->>'created_at' as created_at,
+                       recall_count
+                FROM sinovec
+                WHERE recall_count = 0
+                ORDER BY (payload->>'created_at')::timestamp DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+            cur.execute("SELECT count(*) FROM sinovec WHERE recall_count = 0")
+            total_zero = cur.fetchone()[0]
+        finally:
+            if cur is not None:
+                cur.close()
 
     short = short_mid = trivial = good = 0
     trivial_phrases = {
@@ -1552,7 +1469,7 @@ def cmd_recall_analysis(limit: int = 50) -> None:
         elif cat == "good":
             good += 1
         try:
-            ts = datetime.fromisoformat(created_at.replace('Z', '+00:00')).strftime("%m-%d %H:%M")
+            ts = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
         except Exception:
             ts = created_at[:16] if created_at else "未知"
         preview = content[:55] + ("..." if len(content) > 55 else "")
@@ -1571,6 +1488,8 @@ def cmd_recall_analysis(limit: int = 50) -> None:
     print(f"   · 运行 dedup-deep 批量处理重复")
 
 
+
+
 def cmd_session_l1_gap(gap_threshold: float = 0.3,
                        overlap_threshold: float = COSINE_DIST_DEEP,
                        limit: int = 500) -> None:
@@ -1578,128 +1497,119 @@ def cmd_session_l1_gap(gap_threshold: float = 0.3,
     import json
     from pathlib import Path
 
-    conn = None
-    cur = None
-    try:
-        with get_conn() as conn:
+    # 尝试多个可能的 session 索引路径
+    workspace = Path(_WORKSPACE_ENV)
+    idx_paths = [
+        workspace / ".sessions" / "index.jsonl",
+        workspace / "sessions" / "index.jsonl",
+        Path.home() / ".openclaw" / "sessions" / "index.jsonl",
+    ]
+
+    session_fragments = []
+    for idx_path in idx_paths:
+        if idx_path.exists():
+            with open(idx_path) as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                        if obj.get("text"):
+                            session_fragments.append(obj["text"][:200])
+                    except Exception:
+                        pass
+            break
+
+    with get_conn() as conn:
+        cur = None
+        try:
             cur = conn.cursor()
+            if not session_fragments:
+                try:
+                    cur.execute("""
+                        SELECT left(content, 200)
+                        FROM session_messages
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """, (limit,))
+                    session_fragments = [r[0] for r in cur.fetchall() if r[0]]
+                except psycopg2.Error:
+                    print("⚠️ 未找到 session 索引文件，且 session_messages 表不存在")
+                    print("   提示：session 索引由 session_indexer.py 生成，需先运行索引任务")
+                    return
 
-        # 尝试多个可能的 session 索引路径
-        workspace = Path(_WORKSPACE_ENV)
-        idx_paths = [
-            workspace / ".sessions" / "index.jsonl",
-            workspace / "sessions" / "index.jsonl",
-            Path.home() / ".openclaw" / "sessions" / "index.jsonl",
-        ]
+            print(f"📊 Session 片段：{len(session_fragments)} 条")
+            cur.execute("SELECT count(*) FROM sinovec")
+            l1_total = cur.fetchone()[0]
+            print(f"📊 L1 记忆总数：{l1_total} 条\n")
 
-        session_fragments = []
-        for idx_path in idx_paths:
-            if idx_path.exists():
-                with open(idx_path) as f:
-                    for line in f:
-                        try:
-                            obj = json.loads(line)
-                            if obj.get("text"):
-                                session_fragments.append(obj["text"][:200])
-                        except Exception:
-                            pass
-                break
-
-        if not session_fragments:
-            try:
-                cur.execute("""
-                    SELECT left(content, 200)
-                    FROM session_messages
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """, (limit,))
-                session_fragments = [r[0] for r in cur.fetchall() if r[0]]
-            except psycopg2.Error:
-                print("⚠️ 未找到 session 索引文件，且 session_messages 表不存在")
-                print("   提示：session 索引由 session_indexer.py 生成，需先运行索引任务")
-                cur.close()
+            if not session_fragments:
+                print("❌ 无 session 片段可分析")
                 return
 
-        print(f"📊 Session 片段：{len(session_fragments)} 条")
-        cur.execute("SELECT count(*) FROM mem0")
-        l1_total = cur.fetchone()[0]
-        print(f"📊 L1 记忆总数：{l1_total} 条\n")
+            gap_fragments = []
+            overlap_fragments = []
+            failed = 0
 
-        if not session_fragments:
-            print("❌ 无 session 片段可分析")
+            print(f"🔍 开始分析（gap>{gap_threshold}, overlap<{overlap_threshold}）...")
+
+            for i, fragment in enumerate(session_fragments):
+                if i > 0 and i % 50 == 0:
+                    print(f"  进度 {i}/{len(session_fragments)}...")
+
+                try:
+                    vec = generate_vector(fragment)
+                except Exception:
+                    failed += 1
+                    continue
+
+                try:
+                    cur.execute("""
+                        SELECT id, vector <=> %s::vector as dist,
+                               left(payload->>'data', 80)
+                        FROM sinovec
+                        ORDER BY vector <=> %s::vector
+                        LIMIT 1
+                    """, (vec, vec))
+                    row = cur.fetchone()
+                except psycopg2.Error:
+                    failed += 1
+                    continue
+
+                if row:
+                    min_dist = row[1]
+                    if min_dist > gap_threshold:
+                        gap_fragments.append((fragment[:80], round(min_dist, 3)))
+                    elif min_dist < overlap_threshold:
+                        overlap_fragments.append((fragment[:80], round(min_dist, 3)))
+
+            if failed:
+                print(f"⚠️ {failed} 个片段向量生成/检索失败，已跳过")
+
+            mid_zone = len(session_fragments) - len(gap_fragments) - len(overlap_fragments) - failed
+
+            print(f"\n📈 分析结果（{len(session_fragments)} 条片段）：")
+            print(f"   🟢 重叠（已覆盖）：{len(overlap_fragments)} 条")
+            print(f"   🔴 缺口（未覆盖）：{len(gap_fragments)} 条")
+            print(f"   ⬜ 中间地带：{mid_zone} 条")
+            if failed:
+                print(f"   ⚠️ 生成失败：{failed} 条")
+
+            if gap_fragments:
+                print(f"\n🔴 Gap 样本（前 10 条，建议审查后写入 L1）：")
+                for frag, dist in gap_fragments[:10]:
+                    print(f"   dist={dist} | {frag[:60]}...")
+
+            if overlap_fragments:
+                print(f"\n🟢 Overlap 样本（前 5 条，已重复）：")
+                for frag, dist in overlap_fragments[:5]:
+                    print(f"   dist={dist} | {frag[:60]}...")
+
+            print(f"\n💡 建议：")
+            if len(gap_fragments) > 10:
+                print(f"   · {len(gap_fragments)} 条 session 内容在 L1 无相似，建议审查后写入")
+            else:
+                print(f"   · Session 与 L1 重叠度良好")
+        finally:
             cur.close()
-            put_conn(conn)
-            return
-
-        gap_fragments = []
-        overlap_fragments = []
-        failed = 0
-
-        print(f"🔍 开始分析（gap>{gap_threshold}, overlap<{overlap_threshold}）...")
-
-        for i, fragment in enumerate(session_fragments):
-            if i > 0 and i % 50 == 0:
-                print(f"  进度 {i}/{len(session_fragments)}...")
-
-            try:
-                vec = generate_vector(fragment)
-            except Exception:
-                failed += 1
-                continue
-
-            try:
-                cur.execute("""
-                    SELECT id, vector <=> %s::vector as dist,
-                           left(payload->>'data', 80)
-                    FROM mem0
-                    ORDER BY vector <=> %s::vector
-                    LIMIT 1
-                """, (vec, vec))
-                row = cur.fetchone()
-            except psycopg2.Error:
-                failed += 1
-                continue
-
-            if row:
-                min_dist = row[1]
-                if min_dist > gap_threshold:
-                    gap_fragments.append((fragment[:80], round(min_dist, 3)))
-                elif min_dist < overlap_threshold:
-                    overlap_fragments.append((fragment[:80], round(min_dist, 3)))
-
-        if failed:
-            print(f"⚠️ {failed} 个片段向量生成/检索失败，已跳过")
-
-        mid_zone = len(session_fragments) - len(gap_fragments) - len(overlap_fragments) - failed
-
-        print(f"\n📈 分析结果（{len(session_fragments)} 条片段）：")
-        print(f"   🟢 重叠（已覆盖）：{len(overlap_fragments)} 条")
-        print(f"   🔴 缺口（未覆盖）：{len(gap_fragments)} 条")
-        print(f"   ⬜ 中间地带：{mid_zone} 条")
-        if failed:
-            print(f"   ⚠️ 生成失败：{failed} 条")
-
-        if gap_fragments:
-            print(f"\n🔴 Gap 样本（前 10 条，建议审查后写入 L1）：")
-            for frag, dist in gap_fragments[:10]:
-                print(f"   dist={dist} | {frag[:60]}...")
-
-        if overlap_fragments:
-            print(f"\n🟢 Overlap 样本（前 5 条，已重复）：")
-            for frag, dist in overlap_fragments[:5]:
-                print(f"   dist={dist} | {frag[:60]}...")
-
-        print(f"\n💡 建议：")
-        if len(gap_fragments) > 10:
-            print(f"   · {len(gap_fragments)} 条 session 内容在 L1 无相似，建议审查后写入")
-        else:
-            print(f"   · Session 与 L1 重叠度良好")
-
-    finally:
-        if cur is not None:
-            cur.close()
-        if conn is not None:
-            put_conn(conn)
 
 
 # ── 血缘表清理 ─────────────────────────────────────────────
@@ -1709,43 +1619,41 @@ def cmd_lineage_cleanup(days: int = 90, dry_run: bool = True) -> dict:
     days: 保留天数，默认90天
     dry_run: True=仅报告，False=执行删除
     """
-    conn = None
-    cur = None
-    try:
-        with get_conn() as conn:
+    with get_conn() as conn:
+        cur = None
+        try:
             cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM memory_lineage")
+            total = cur.fetchone()[0]
 
-        cur.execute("SELECT count(*) FROM memory_lineage")
-        total = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT count(*) FROM memory_lineage
-            WHERE created_at <= NOW() - INTERVAL '%s days'
-        """, (days,))
-        old_count = cur.fetchone()[0]
-
-        print(f"📊 memory_lineage 统计：")
-        print(f"   总记录：{total} 条")
-        print(f"   即将删除（{days}天前）：{old_count} 条")
-
-        if dry_run:
-            print(f"\n⚠️ dry_run=True，未执行删除。加 --no-dry-run 执行实际删除")
-            return {"total": total, "old": old_count, "deleted": 0, "dry_run": True}
-
-        if old_count > 0:
             cur.execute("""
-                DELETE FROM memory_lineage
-                WHERE created_at <= NOW() - INTERVAL '%s days'
-            """, (days,))
-            conn.commit()
-            print(f"\n✅ 已删除 {old_count} 条过期血缘记录")
-        else:
-            print(f"\n✅ 无过期记录需要清理")
+                SELECT count(*) FROM memory_lineage
+                WHERE created_at <= NOW() - INTERVAL %s
+            """, (f"{days} days",))
+            old_count = cur.fetchone()[0]
 
-        return {"total": total, "old": old_count, "deleted": old_count, "dry_run": False}
-    finally:
-        if cur is not None:
-            cur.close()
+            print(f"📊 memory_lineage 统计：")
+            print(f"   总记录：{total} 条")
+            print(f"   即将删除（{days}天前）：{old_count} 条")
+
+            if dry_run:
+                print(f"\n⚠️ dry_run=True，未执行删除。加 --no-dry-run 执行实际删除")
+                return {"total": total, "old": old_count, "deleted": 0, "dry_run": True}
+
+            if old_count > 0:
+                cur.execute("""
+                    DELETE FROM memory_lineage
+                    WHERE created_at <= NOW() - INTERVAL %s
+                """, (f"{days} days",))
+                conn.commit()
+                print(f"\n✅ 已删除 {old_count} 条过期血缘记录")
+            else:
+                print(f"\n✅ 无过期记录需要清理")
+
+            return {"total": total, "old": old_count, "deleted": old_count, "dry_run": False}
+        finally:
+            if cur is not None:
+                cur.close()
 
 
 

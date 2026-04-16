@@ -4,73 +4,25 @@ SinoVec - 自动记忆提取脚本
 从对话日志中自动提取值得长期记忆的内容
 """
 
-import os, sys, json, re, glob
+import os, json, re, glob
 from datetime import datetime
-from contextlib import contextmanager
 
 # ── 配置（统一从环境变量读取）───────────────────────────────────────
+from common import get_conn, get_embedding
+
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
-_db_pass = os.getenv("MEMORY_DB_PASS", "")
-if not _db_pass:
-    raise RuntimeError(
-        "MEMORY_DB_PASS environment variable is not set. "
-        "Please set it before running. "
-        "Example: export MEMORY_DB_PASS=your_secure_password"
-    )
-MEMORY_DB = {
-    "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
-    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),
-    "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "openclaw"),
-    "password": _db_pass,
-}
 DEDUP_WINDOW_HOURS = 6  # 6小时内重复内容跳过
-
-# ── 向量生成（全局单例，避免重复加载模型）─────────────────────────────
-_embedding_model = None
-_embedding_lock = __import__("threading").Lock()
-
-def get_embedding(text: str) -> list:
-    """使用 FastEmbed 生成向量（全局模型单例）"""
-    global _embedding_model
-    if _embedding_model is None:
-        with _embedding_lock:
-            if _embedding_model is None:
-                hf_proxy = os.getenv("HF_HUB_PROXY", "")
-                if hf_proxy:
-                    os.environ["HF_HUB_PROXY"] = hf_proxy
-                from fastembed import TextEmbedding
-                _embedding_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
-    arr = list(_embedding_model.embed([text]))[0]
-    return [float(x) for x in arr]
-
-# ── 数据库 ────────────────────────────────────────────────────────────
-import psycopg2
-
-def db_conn():
-    return psycopg2.connect(**MEMORY_DB)
-
-@contextmanager
-def get_conn():
-    conn = db_conn()
-    try:
-        yield conn
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 def is_recent(source_id: str) -> bool:
     """检查是否在 DEDUP_WINDOW_HOURS 内已提取过（按 source_id 查 payload）"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            SELECT 1 FROM mem0
+            SELECT 1 FROM sinovec
             WHERE payload->>'source_id' = %s
-              AND last_access_time > NOW() - INTERVAL '%s hours'
+              AND last_access_time > NOW() - INTERVAL %s
             LIMIT 1
-        """, (source_id, DEDUP_WINDOW_HOURS))
+        """, (source_id, f"{DEDUP_WINDOW_HOURS} hours"))
         exists = cur.fetchone() is not None
         cur.close()
     return exists
@@ -85,7 +37,7 @@ def save_memory(text: str, source_id: str, user: str = "主人") -> str:
         payload = json.dumps({"data": text, "user_id": user,
                               "source": "auto_extract", "source_id": source_id})
         cur.execute("""
-            INSERT INTO mem0 (id, vector, payload)
+            INSERT INTO sinovec (id, vector, payload)
             VALUES (%s, %s::vector, %s::jsonb)
         """, (pid, vec, payload))
         conn.commit()

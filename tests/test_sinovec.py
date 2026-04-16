@@ -5,7 +5,7 @@ SinoVec 单元测试
 import sys, os, pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from memory_layer import generate_vector
+from memory_sinovec import generate_vector
 
 
 class TestGenerateVector:
@@ -40,7 +40,7 @@ class TestVectorDatabase:
         """测试数据库连接（需要真实的数据库环境）"""
         pytest.importorskip("psycopg2")
         try:
-            from memory_layer import get_conn
+            from memory_sinovec import get_conn
             conn = get_conn()
             assert conn is not None
         except Exception:

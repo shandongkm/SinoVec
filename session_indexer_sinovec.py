@@ -4,50 +4,19 @@ SinoVec - 会话历史索引器
 将 AI 对话片段自动索引到向量数据库
 """
 
-import os, json, glob, hashlib
+import os, json, glob
 from datetime import datetime
-from contextlib import contextmanager
+
 
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
 
-# ── 配置（统一从环境变量读取，与 memory_layer.py 一致）───────────────
-_db_pass = os.getenv("MEMORY_DB_PASS", "")
-if not _db_pass:
-    raise RuntimeError(
-        "MEMORY_DB_PASS environment variable is not set. "
-        "Please set it before running. "
-        "Example: export MEMORY_DB_PASS=your_secure_password"
-    )
-MEMORY_DB = {
-    "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
-    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),
-    "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "openclaw"),
-    "password": _db_pass,
-}
-
-# ── 向量生成（全局单例）─────────────────────────────────────────────
-_embedding_model = None
-_embedding_lock = __import__("threading").Lock()
-
-# ── 数据库连接上下文管理器 ──────────────────────────────────────────
-import psycopg2
-
-@contextmanager
-def get_conn():
-    conn = psycopg2.connect(**MEMORY_DB)
-    try:
-        yield conn
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+# ── 配置（统一从环境变量读取）───────────────────────────────────────
+from common import get_conn, get_embedding
 
 def is_duplicate(source_id: str) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM mem0 WHERE payload->>'source_id' = %s LIMIT 1", (source_id,))
+        cur.execute("SELECT 1 FROM sinovec WHERE payload->>'source_id' = %s LIMIT 1", (source_id,))
         exists = cur.fetchone() is not None
         cur.close()
     return exists
@@ -66,25 +35,12 @@ def save_fragment(text: str, session_id: str, source_id: str) -> str:
             "source_id": source_id
         })
         cur.execute("""
-            INSERT INTO mem0 (id, vector, payload)
+            INSERT INTO sinovec (id, vector, payload)
             VALUES (%s, %s::vector, %s::jsonb)
         """, (pid, vec, payload))
         conn.commit()
         cur.close()
     return pid
-
-def get_embedding(text: str) -> list:
-    global _embedding_model
-    if _embedding_model is None:
-        with _embedding_lock:
-            if _embedding_model is None:
-                hf_proxy = os.getenv("HF_HUB_PROXY", "")
-                if hf_proxy:
-                    os.environ["HF_HUB_PROXY"] = hf_proxy
-                from fastembed import TextEmbedding
-                _embedding_model = TextEmbedding("BAAI/bge-small-zh-v1.5")
-    arr = list(_embedding_model.embed([text]))[0]
-    return [float(x) for x in arr]
 
 def index_sessions(dry_run: bool = False):
     files = glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl"))
@@ -145,7 +101,7 @@ def main():
     elif args.cmd == "check":
         with get_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM mem0 WHERE source = 'session'")
+            cur.execute("SELECT COUNT(*) FROM sinovec WHERE source = 'session'")
             print(f"已索引 session 片段: {cur.fetchone()[0]}")
             cur.close()
     else:

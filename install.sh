@@ -8,9 +8,9 @@
 
 set -e
 
-# 默认值（与 memory_layer.py 保持一致）
+# 默认值（与 memory_sinovec.py 保持一致）
 DEFAULT_DB_PORT=5433
-DEFAULT_DB_USER=openclaw
+DEFAULT_DB_USER=sinovec
 
 # ── 解析参数 ──────────────────────────────────────────────
 USE_VENV=false
@@ -94,7 +94,7 @@ else
     sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
 fi
 
-# ── 数据库配置（默认值与 memory_layer.py 一致）─────────────
+# ── 数据库配置（默认值与 memory_sinovec.py 一致）─────────────
 read -p "数据库端口 [$DEFAULT_DB_PORT]: " DB_PORT
 DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
 
@@ -127,7 +127,7 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
 
 # ── 导入表结构 ──────────────────────────────────────────────
 echo "导入数据库表结构..."
-PGPASSWORD="$DB_PASS" psql -U "$DB_USER" -d "$DB_NAME" -f "$CURRENT_DIR/schema.sql"
+PGPASSWORD="$DB_PASS" psql -U "$DB_USER" -d "$DB_NAME" -f "$CURRENT_DIR/rebuild_memory_sinovec.sql"
 echo "✅ 表结构已创建"
 
 # ── 安装 Python 依赖 ────────────────────────────────────────
@@ -162,7 +162,7 @@ SINOVEC_HOME="$PREFIX"
 # Python 虚拟环境（仅在使用 --venv 时生效）
 # VENV_HOME="$VENV_PATH"
 
-# 数据库连接配置（memory_layer.py 从环境变量读取）
+# 数据库连接配置（memory_sinovec.py 从环境变量读取）
 MEMORY_DB_HOST=127.0.0.1
 MEMORY_DB_PORT=$DB_PORT
 MEMORY_DB_NAME=$DB_NAME
@@ -175,7 +175,7 @@ EOF
 
 # ── 生成 systemd service 文件（路径直接写死）─────────────────
 echo "配置 systemd 服务..."
-cat > /etc/systemd/system/memory_layer.service << EOF
+cat > /etc/systemd/system/memory-sinovec.service << EOF
 [Unit]
 Description=SinoVec Memory Layer HTTP API
 After=network.target postgresql.service
@@ -185,7 +185,7 @@ Type=simple
 User=root
 WorkingDirectory=$PREFIX
 EnvironmentFile=-/etc/default/sinovec
-ExecStart=$PYTHON_CMD $PREFIX/memory_layer.py serve --host 127.0.0.1 --port 18793
+ExecStart=$PYTHON_CMD $PREFIX/memory_sinovec.py serve --host 127.0.0.1 --port 18793
 Restart=always
 RestartSec=10
 
@@ -194,15 +194,15 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable memory-layer
-systemctl start memory-layer
+systemctl enable memory-sinovec
+systemctl start memory-sinovec
 
 # ── 验证 ───────────────────────────────────────────────────
 sleep 2
-if systemctl is-active --quiet memory-layer; then
+if systemctl is-active --quiet memory-sinovec; then
     echo "✅ 服务启动成功"
 else
-    echo "⚠️  服务启动异常，请检查: systemctl status memory-layer"
+    echo "⚠️  服务启动异常，请检查: systemctl status memory-sinovec"
 fi
 
 echo ""
@@ -211,9 +211,9 @@ echo "  安装完成!"
 echo "========================================="
 echo ""
 echo "管理命令:"
-echo "  sudo systemctl status memory-layer   # 查看状态"
-echo "  sudo systemctl restart memory-layer   # 重启"
-echo "  sudo systemctl stop memory-layer      # 停止"
+echo "  sudo systemctl status memory-sinovec   # 查看状态"
+echo "  sudo systemctl restart memory-sinovec   # 重启"
+echo "  sudo systemctl stop memory-sinovec      # 停止"
 echo ""
 echo "卸载命令:"
 echo "  sudo $PREFIX/uninstall.sh"

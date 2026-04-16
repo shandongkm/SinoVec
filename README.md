@@ -28,14 +28,14 @@ pip install -r requirements.txt
 
 # 2. 初始化数据库（PostgreSQL 14+ required）
 psql -U postgres -c "CREATE DATABASE memory;"
-psql -U postgres -d memory -f schema.sql
+psql -U postgres -d memory -f rebuild_memory_sinovec.sql
 
 # 3. 配置环境变量
 cp .env.example .env
 # 编辑 .env 填入你的配置
 
 # 4. 启动服务
-python memory_layer.py serve --host 127.0.0.1 --port 18793
+python memory_sinovec.py serve --host 127.0.0.1 --port 18793
 ```
 
 ## 📡 API 接口
@@ -80,7 +80,7 @@ curl http://127.0.0.1:18793/stats
 | `MEMORY_DB_NAME` | 数据库名 | memory |
 | `MEMORY_DB_USER` | 数据库用户 | openclaw |
 | `MEMORY_DB_PASS` | 数据库密码 | (必填) |
-| `MEMORY_API_KEY` | API 认证密钥（可选）。若设置，所有 API 请求（除 `/health`）必须携带密钥。支持 `Authorization: Bearer <key>`、`X-API-Key: <key>`、`?api_key=<key>` 三种方式 | 不设置则跳过认证（仅开发环境） |
+| `MEMORY_API_KEY` | API 认证密钥（可选）。若设置，所有 API 请求（除 `/health`）必须携带密钥。支持 `Authorization: Bearer <key>`、`X-API-Key: <key>`、`?api_key=<key>` 三种方式 | 不设置则仅 `/health` 可访问，其他请求返回 401 |
 | `HF_HUB_PROXY` | HuggingFace 代理 | (可选) |
 
 ## 🔌 与 OpenClaw 集成
@@ -110,7 +110,7 @@ curl http://127.0.0.1:18793/stats
 ### 2. 启动 SinoVec 服务
 
 ```bash
-systemctl enable --now memory-layer
+systemctl enable --now memory-sinovec
 ```
 
 ### 3. 重启 OpenClaw Gateway
@@ -125,16 +125,16 @@ systemctl restart openclaw-gateway
 SinoVec/
 ├── README.md             # 项目说明
 ├── roadmap.md            # 开发路线图
-├── memory_layer.py       # 核心 API 服务
-├── extract_memories.py   # 自动记忆提取脚本（支持 --dry-run）
-├── session_indexer.py     # 会话索引脚本（支持 --dry-run）
-├── schema.sql            # 数据库表结构
+├── memory_sinovec.py       # 核心 API 服务
+├── extract_memories_sinovec.py   # 自动记忆提取脚本（支持 --dry-run）
+├── session_indexer_sinovec.py     # 会话索引脚本（支持 --dry-run）
+├── rebuild_memory_sinovec.sql     # 数据库表结构
 ├── requirements.txt      # Python 依赖
 ├── Dockerfile            # 容器镜像构建
 ├── docker-compose.yml    # Docker 一键部署
 ├── install.sh            # 快速安装脚本
 ├── uninstall.sh          # 卸载脚本
-├── memory_layer.service  # systemd 服务配置
+├── memory-sinovec.service # systemd 服务配置
 ├── CHANGELOG.md          # 版本变更日志
 ├── CONTRIBUTING.md       # 贡献指南
 ├── LICENSE               # MIT 许可证
@@ -152,21 +152,21 @@ SinoVec/
 pytest tests/ -v
 
 # 添加测试记忆
-python memory_layer.py add "测试内容" --user 用户名
+python memory_sinovec.py add "测试内容" --user 用户名
 
 # 查看统计
-python memory_layer.py stats
+python memory_sinovec.py stats
 
 # 测试记忆提取（dry-run，不实际写入）
-python extract_memories.py --scan-recent --dry-run
+python extract_memories_sinovec.py --scan-recent --dry-run
 
 # 测试会话索引（dry-run，不实际写入）
-python session_indexer.py index --dry-run
+python session_indexer_sinovec.py index --dry-run
 ```
 
 ## 🛡️ 安全提示
 
-- **生产环境务必设置 `MEMORY_API_KEY`**，否则 API 服务完全开放，任何人都可读取记忆
+- **生产环境务必设置 `MEMORY_API_KEY`**，否则只有 `/health` 端点可访问，其他 API 请求会返回 401 未授权错误
 - **不要将 API 服务暴露到公网**
 - `MEMORY_DB_PASS` 环境变量必须设置，否则服务拒绝启动
 - 数据库密码使用强密码

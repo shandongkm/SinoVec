@@ -31,13 +31,13 @@ fi
 
 # ── 停止并禁用服务 ─────────────────────────────────────────
 echo "停止服务..."
-systemctl stop memory-layer 2>/dev/null || true
-systemctl disable memory-layer 2>/dev/null || true
+systemctl stop memory-sinovec 2>/dev/null || true
+systemctl disable memory-sinovec 2>/dev/null || true
 echo "✅ 服务已停止"
 
 # ── 删除 systemd unit ───────────────────────────────────────
 echo "删除 systemd 服务配置..."
-rm -f /etc/systemd/system/memory_layer.service
+rm -f /etc/systemd/system/memory-sinovec.service
 systemctl daemon-reload
 echo "✅ systemd 配置已删除"
 
