@@ -48,9 +48,13 @@ if [ -z "$API_KEY" ]; then
     exit 1
 fi
 
+# 使用 python3 做可靠 URL 编码（正确处理多词查询和特殊字符）
+# 修复：原实现 $QUERY 未加引号，多词查询会被 split 切割
 ENCODED_QUERY=$(python3 -c "
 import urllib.parse, sys
-print(urllib.parse.quote(' '.join(sys.argv[1:])))
+# 将所有命令行参数合并为一个字符串（以空格分隔），再编码
+query = ' '.join(sys.argv[1:])
+print(urllib.parse.quote(query, safe=''))
 " $QUERY)
 curl -s -X GET "${API_URL}/search?q=${ENCODED_QUERY}&top_k=${TOPK}&api_key=${API_KEY}" \
   -H "Content-Type: application/json" 2>/dev/null || echo '{"error": "服务不可用或查询失败"}'

@@ -95,11 +95,23 @@ elif [ "$HTTP_CODE" = "000" ]; then
         echo "❌ 无法找到 SinoVec 安装目录，CLI 模式失败" >&2
         exit 1
     fi
-    # CLI 模式需要 DB 密码，尝试从 /etc/default/sinovec 读（root）
-    if [ -r /etc/default/sinovec ]; then
+    # CLI 模式需要 DB 密码，按优先级尝试多个配置位置
+    _CLI_CFG_LOADED=false
+    # 1. skill-credentials.env（OpenClaw 技能安装时生成）
+    if [ -r "$SCRIPT_DIR/../skill-credentials.env" ]; then
         set -a
-        source /etc/default/sinovec 2>/dev/null
+        source "$SCRIPT_DIR/../skill-credentials.env" 2>/dev/null && _CLI_CFG_LOADED=true
         set +a
+    fi
+    # 2. /etc/default/sinovec（标准 root 安装）
+    if [ "$_CLI_CFG_LOADED" = "false" ] && [ -r /etc/default/sinovec ]; then
+        set -a
+        source /etc/default/sinovec 2>/dev/null && _CLI_CFG_LOADED=true
+        set +a
+    fi
+    if [ "$_CLI_CFG_LOADED" = "false" ]; then
+        echo "❌ CLI 模式无法找到数据库配置（需要 MEMORY_DB_PASS）" >&2
+        exit 1
     fi
     export MEMORY_DB_PASS
     cd "$SINOVEC_HOME"

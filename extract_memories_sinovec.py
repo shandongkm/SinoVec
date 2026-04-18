@@ -65,20 +65,51 @@ def save_memory(text: str, source_id: str, user: str = "主人") -> str:
 
 # ── 记忆提取逻辑 ──────────────────────────────────────────────────────
 def extract_from_text(text: str) -> list[str]:
-    """从文本中提取值得记忆的内容"""
+    """从文本中提取值得记忆的内容
+    
+    扩展提取策略（覆盖更多有价值的内容）：
+    - 带编号/符号的列表项（- * 1. ① 等）
+    - 标题行（# 标记）
+    - 代码块（以 ``` 包裹或行内含冒号的配置）
+    - 包含关键决策/结论的长句（以 。！？ 结尾且含关键词）
+    - 引号内容（「」『』"" 包裹的重要陈述）
+    - 含等号/箭头的配置或映射语句
+    """
     memories = []
     lines = text.split("\n")
     for line in lines:
         line = line.strip()
-        # 提取带编号的列表项
-        if re.match(r"^[-*]\s", line) and len(line) > 10:
+        if len(line) < 5:
+            continue
+
+        # 提取带编号/符号的列表项
+        if re.match(r"^[-*\u2022\u25E6\u2043]\s", line) and len(line) > 10:
             memories.append(line)
-        # 提取结论性语句
+        # 提取带数字编号的列表项
+        elif re.match(r"^\d+[.)]\s", line) and len(line) > 8:
+            memories.append(line)
+        # 提取圈号编号（① ② ③）
+        elif re.match(r"^[\u2460-\u24ff]\s", line) and len(line) > 5:
+            memories.append(line)
+        # 提取结论性语句（标题行）
         elif re.match(r"^#{1,3}\s", line) and len(line) > 5:
             memories.append(line)
-        # 提取代码块（关键配置）
-        elif line.startswith("`") and ":" in line:
-            memories.append(line.strip("`"))
+        # 提取代码块标记行（``` 开始或单独的命令行）
+        elif re.match(r"^```", line) or re.match(r"^    ", line):
+            if len(line) > 6:
+                memories.append(line)
+        # 提取配置/映射语句（包含 key=value 或 key => value）
+        elif re.search(r"\w+\s*[=<>]+\s*\S+", line) and len(line) > 8:
+            memories.append(line)
+        # 提取引号内容（「」『』"" 包裹的陈述）
+        elif re.search(r"[\u300c\u300e\u201c]\S[\u300d\u300f\u201d]", line):
+            m = re.search(r'["「『“](.*?)["」』”]', line)
+            if m and len(m.group(1)) > 5:
+                memories.append(m.group(1))
+        # 提取包含关键决策词的长句
+        elif re.search(r"(决定|确认|方案|结论|因此|所以|必须|应该|建议|记住|下次|重要)", line):
+            if len(line) > 10:
+                memories.append(line)
     return memories
 
 def scan_sessions(hours: int = 1) -> list[dict]:

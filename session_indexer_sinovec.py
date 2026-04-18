@@ -39,7 +39,8 @@ def _load_state() -> dict:
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+        # 文件不存在/损坏/无权限 → 从空状态开始（强制全量重建）
         return {}
 
 
@@ -90,7 +91,7 @@ def _get_last_line_hash(path: str) -> str:
         lines = [l for l in tail.strip().split("\n") if l.strip()]
         if lines:
             return hashlib.md5(lines[-1].encode()).hexdigest()[:16]
-    except:
+    except (OSError, IOError, IndexError, UnicodeDecodeError):
         pass
     return ""
 

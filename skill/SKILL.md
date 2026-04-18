@@ -13,9 +13,9 @@ SinoVec 是基于 pgvector + zhparser 构建的中文语义记忆系统，支持
 
 ```bash
 # 安装后实际路径：
-# ~/.openclaw/skills/sinovec-memory/skill/scripts/search_memories.sh
-cd ~/.openclaw/skills/sinovec-memory/skill
-./scripts/search_memories.sh "用户询问的关键词"
+# ~/.openclaw/skills/sinovec-memory/scripts/search_memories.sh
+cd ~/.openclaw/skills/sinovec-memory/scripts
+./search_memories.sh "用户询问的关键词"
 ```
 
 结果以 JSON 格式返回，包含记忆内容和相关性评分。
@@ -23,8 +23,10 @@ cd ~/.openclaw/skills/sinovec-memory/skill
 ## 添加记忆
 
 ```bash
-cd ~/.openclaw/skills/sinovec-memory/skill
-./scripts/add_memory.sh "要记忆的内容" "用户ID"
+# 安装后实际路径：
+# ~/.openclaw/skills/sinovec-memory/scripts/add_memory.sh
+cd ~/.openclaw/skills/sinovec-memory/scripts
+./add_memory.sh "要记忆的内容" "用户ID"
 ```
 
 ## API 端点

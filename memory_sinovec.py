@@ -763,7 +763,7 @@ def cmd_dedup() -> dict:
                       AND source = 'memory'
                       AND vector <=> %s::vector < COSINE_DIST_MERGE
                     ORDER BY vector <=> %s::vector
-                    LIMIT 5
+                    LIMIT 20
                 """, (old_vec_list, old_id, old_vec_list, old_vec_list))
                 candidates = cur2.fetchall()
             finally:

@@ -312,15 +312,19 @@ else
     if [[ "$INSTALL_OLLAMA" =~ ^[Yy]$ ]]; then
         echo "正在安装 Ollama（下载约 50MB 安装包）..."
         curl -fsSL https://ollama.com/install.sh -o /tmp/ollama_install.sh
-        if [ -s /tmp/ollama_install.sh ]; then
+        _curl_exit=$?
+        if [ $_curl_exit -ne 0 ]; then
+            echo "⚠️  Ollama 安装脚本下载失败（curl exit=$_curl_exit），跳过安装"
+            echo "   手动安装: curl -fsSL https://ollama.com/install.sh | sh"
+        elif [ ! -s /tmp/ollama_install.sh ]; then
+            echo "⚠️  Ollama 安装脚本为空（下载不完整），跳过安装"
+        else
             sh /tmp/ollama_install.sh && OLLAMA_INSTALLED_NOW=true || {
                 echo "⚠️  Ollama 安装失败，请检查网络或手动安装"
                 echo "   手动安装: curl -fsSL https://ollama.com/install.sh | sh"
             }
-            rm -f /tmp/ollama_install.sh
-        else
-            echo "⚠️  下载 Ollama 安装脚本失败（网络问题），跳过安装"
         fi
+        rm -f /tmp/ollama_install.sh
     else
         echo "⚠️  跳过 Ollama 安装，LLM 扩展功能将自动降级"
     fi
@@ -551,14 +555,22 @@ if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
 
     # 生成 skill 专用凭证文件（含 DB 密码，供 CLI fallback 使用）
     # 注意：此文件权限 600，仅 root 可读写
-    cat > "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env" << 'CREDEOF'
+    # 使用 bash heredoc 写入，双引号不解释 $ 和反引号，变量在渲染时展开
+    # 修复：原 python3 方式若密码含特殊字符（单/双引号）可能导致语法错误
+    # heredoc 双引号包裹：bash 展开 ${VAR}，但 $VAR 和 `cmd` 不展开（安全）
+    cat > "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env" << 'CREDFILE'
 MEMORY_DB_HOST=127.0.0.1
-MEMORY_DB_PORT=${DB_PORT:-5433}
-MEMORY_DB_NAME=${DB_NAME:-memory}
-MEMORY_DB_USER=${DB_USER:-sinovec}
+MEMORY_DB_PORT=${DB_PORT}
+MEMORY_DB_NAME=${DB_NAME}
+MEMORY_DB_USER=${DB_USER}
 MEMORY_DB_PASS=${DB_PASS}
-CREDEOF
-    sed -i "s/\${DB_PORT:-5433}/$DB_PORT/g; s/\${DB_NAME:-memory}/$DB_NAME/g; s/\${DB_USER:-sinovec}/$DB_USER/g; s/\${DB_PASS}/$DB_PASS/g" \
+CREDFILE
+    # 用 sed 将 ${VAR} 模式替换为实际值（避免 bash 展开时特殊字符注入）
+    sed -i \
+        -e "s/\${DB_PORT}/$DB_PORT/g" \
+        -e "s/\${DB_NAME}/$DB_NAME/g" \
+        -e "s/\${DB_USER}/$DB_USER/g" \
+        -e "s/\${DB_PASS}/$DB_PASS/g" \
         "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
     chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
 

@@ -39,9 +39,9 @@ services:
       # SESSIONS_DIR: /root/.openclaw/agents/main/sessions
     volumes:
       - ./workspace:/data/workspace
-      - ~/.cache/fastembed:/root/.cache/fastembed
+      - ${HOME:-/root}/.cache/fastembed:/root/.cache/fastembed
       # 如需会话自动索引，将主机会话目录挂载到容器内：
-      # - ~/.openclaw/agents/main/sessions:/root/.openclaw/agents/main/sessions:ro
+      # - ${HOME:-/root}/.openclaw/agents/main/sessions:/root/.openclaw/agents/main/sessions:ro
     depends_on:
       postgres:
         condition: service_healthy
