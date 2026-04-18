@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.0.5 (2026-04-18)
+
+### 安全修复
+- **移除所有硬编码凭证**：技能脚本（`add_memory.sh`、`search_memories.sh`）不再包含数据库密码、API Key、路径等硬编码值，改从 `/etc/default/sinovec` 环境变量文件读取。
+- **移除强制代理配置**：`memory_sinovec.py` 不再强制设置 `HTTP_PROXY/HTTPS_PROXY`，仅当 `HF_HUB_PROXY` 环境变量已设置时生效，适应不同网络环境。
+- **安装脚本优化**：移除已失效的 sed 凭证替换指令，技能安装更加健壮。
+
+### 文档更新
+- **README 完善**：新增方式三「安装脚本」章节，明确 OpenClaw 技能集成说明，更新项目结构。
+- **API 文档修正**：`api_schema.md` 修正参数名 `topK` → `top_k`，移除硬编码 API Key 示例。
+- **OpenClaw 技能包**：新增 `skill/` 目录，包含 SinoVec OpenClaw AgentSkill，支持安装时自动部署。
+
+### 项目结构优化
+- **移除敏感文件**：删除 `.env` 敏感文件（包含真实密码），避免误提交到版本库。
+- **Docker 配置统一**：`docker-compose.yml` 移至根目录，简化 Docker 一键部署流程。
+
+---
+
 ## v1.0.4 (2026-04-16)
 
 ### 连接管理回归修复
