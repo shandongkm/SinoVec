@@ -41,8 +41,14 @@ python memory_sinovec.py serve --host 127.0.0.1 --port 18793
 ### 方式三：安装脚本（推荐 ⭐）
 
 ```bash
+# Gitee（推荐国内用户）
 git clone https://gitee.com/confucius-and-mencius/SinoVec.git
 cd SinoVec
+
+# 或 GitHub（需要代理）
+# git clone https://github.com/shandongkm/SinoVec.git
+# cd SinoVec
+
 chmod +x install.sh
 sudo ./install.sh
 ```
