@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.6 (2026-04-18)
+
+### 功能增强
+- **Ollama 三级降级机制**：新增 `_ollama_check_available()` 和 `_ollama_model_exists()`，实现三级降级保障。
+  - 第1级：Ollama + qwen2.5:7b
+  - 第2级：降级到 qwen2.5:3b
+  - 第3级：自动降级，仅使用向量+BM25 检索
+- **install.sh 交互式 Ollama 安装**：安装时询问是否安装 Ollama，支持选择模型并自动拉取。
+
+### 安全与健壮性
+- **install.sh 安全改进**：curl|sh 改为先下载临时文件再执行，添加失败检测。
+- **systemctl user 服务**：失败时给出手动启动指引。
+- **ollama pull 错误处理**：拉取失败时提示手动重试。
+
+### 文档更新
+- **README 结构优化**：Docker 和手动部署方式各分为 Gitee/GitHub 两个子项。
+- **LLM 增强章节**：新增三级降级机制说明、安装 Ollama 指引、环境变量说明。
+
+---
+
 ## v1.0.5 (2026-04-18)
 
 ### 安全修复
