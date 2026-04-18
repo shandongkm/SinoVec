@@ -197,6 +197,23 @@ systemctl daemon-reload
 systemctl enable memory-sinovec
 systemctl start memory-sinovec
 
+# ── 安装 OpenClaw 记忆技能 ─────────────────────────────────
+OPENCLAW_SKILLS_DIR="/root/.openclaw/skills"
+if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
+    echo "检测到 OpenClaw，正在安装记忆技能..."
+    mkdir -p "$OPENCLAW_SKILLS_DIR/sinovec-memory"
+    cp -r "$CURRENT_DIR/skill/." "$OPENCLAW_SKILLS_DIR/sinovec-memory/"
+
+    # 修复脚本中的硬编码路径（改为读取环境变量）
+    sed -i 's|MEMORY_DB_PASS=sinovec_secure_pass|MEMORY_DB_PASS='$DB_PASS'|g' "$OPENCLAW_SKILLS_DIR/sinovec-memory/scripts/add_memory.sh" 2>/dev/null || true
+
+    echo "✅ 记忆技能已安装到: $OPENCLAW_SKILLS_DIR/sinovec-memory"
+else
+    echo "⚠️  未检测到 OpenClaw，跳过技能安装"
+    echo "   如已安装 OpenClaw，请手动运行以下命令安装技能:"
+    echo "   cp -r $PREFIX/skill ~/.openclaw/skills/sinovec-memory"
+fi
+
 # ── 验证 ───────────────────────────────────────────────────
 sleep 2
 if systemctl is-active --quiet memory-sinovec; then
@@ -224,4 +241,6 @@ echo "  http://127.0.0.1:18793/stats         # 统计信息"
 echo ""
 echo "配置文件: /etc/default/sinovec"
 echo "安装目录: $PREFIX"
+echo ""
+echo "OpenClaw 技能: ~/.openclaw/skills/sinovec-memory"
 echo ""
