@@ -1,23 +1,19 @@
 -- SinoVec 数据库表结构
 -- 需要 PostgreSQL 14+ 和 pgvector 扩展
+-- zhparser 扩展检测和 fts 列创建见 init-zhparser.sh
 
 -- 启用 pgvector 扩展
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- 记忆主表
+-- 记忆主表（不含 fts 列，fts 列由 init-zhparser.sh 根据 zhparser 可用性决定添加）
 CREATE TABLE IF NOT EXISTS sinovec (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     vector          vector(512) NOT NULL,
     payload         JSONB NOT NULL,
 
-    -- 全文检索向量
-    -- 如已安装 zhparser 扩展，使用中文解析器（效果最佳）
-    -- 如无法安装 zhparser，将 'chinese_zh' 改为 'simple'（效果较差）
-    fts             tsvector GENERATED ALWAYS AS (to_tsvector('chinese_zh', payload->>'data')) STORED,
-
     source          TEXT DEFAULT 'memory',
     recall_count    INT DEFAULT 0,          -- 被召回次数（用于 recall-analysis）
-    last_access_time TIMESTAMPTZ,           -- 最近访问时间（用于热度晋升）
+    last_access_time TIMESTAMPTZ,
     access_count    INT DEFAULT 0,           -- 访问次数（用于热度晋升）
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
@@ -28,13 +24,11 @@ CREATE INDEX IF NOT EXISTS idx_sinovec_vector
     ON sinovec USING ivfflat (vector vector_cosine_ops)
     WITH (lists = 100);
 
--- 全文检索索引
-CREATE INDEX IF NOT EXISTS idx_sinovec_fts
-    ON sinovec USING gin (fts);
-
 -- payload JSONB 属性索引
 CREATE INDEX IF NOT EXISTS idx_sinovec_source
     ON sinovec (source);
+CREATE INDEX IF NOT EXISTS idx_sinovec_source_jsonb
+    ON sinovec ((payload->>'source'));  -- session 片段按 source 查询加速
 CREATE INDEX IF NOT EXISTS idx_sinovec_created
     ON sinovec (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sinovec_access
@@ -82,3 +76,5 @@ CREATE INDEX IF NOT EXISTS idx_lineage_target
     ON memory_lineage (target_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_created
     ON memory_lineage (created_at DESC);
+
+-- fts 列的创建由 init-zhparser.sh 完成（见 init-zhparser.sh）

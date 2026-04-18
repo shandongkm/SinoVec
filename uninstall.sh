@@ -15,12 +15,16 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# 读取安装目录（从现有配置中获取）
+# ── 读取安装配置（容错：文件不存在时各变量使用安全默认值）─────────
 if [ -f /etc/default/sinovec ]; then
+    set -a
     source /etc/default/sinovec
+    set +a
 fi
 
 INSTALL_DIR="${SINOVEC_HOME:-/opt/SinoVec}"
+# 修复：install.sh 默认创建的数据库名是 memory，不是 sinovec
+DB_NAME_TO_DROP="${MEMORY_DB_NAME:-memory}"
 
 read -p "确认卸载 SinoVec（安装目录: $INSTALL_DIR）？[y/N] " CONFIRM
 CONFIRM="${CONFIRM:-N}"
@@ -29,15 +33,31 @@ if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
     exit 0
 fi
 
-# ── 停止并禁用服务 ─────────────────────────────────────────
+# ── 停止并禁用所有服务 ─────────────────────────────────────────
 echo "停止服务..."
 systemctl stop memory-sinovec 2>/dev/null || true
 systemctl disable memory-sinovec 2>/dev/null || true
-echo "✅ 服务已停止"
+echo "✅ 主服务已停止"
 
-# ── 删除 systemd unit ───────────────────────────────────────
+# ── 停止并禁用定时器（安装时可能启用了自动记忆提取和会话索引）─────
+echo "停止定时器..."
+systemctl stop sinovec-extract.timer 2>/dev/null || true
+systemctl disable sinovec-extract.timer 2>/dev/null || true
+systemctl stop sinovec-index.timer 2>/dev/null || true
+systemctl disable sinovec-index.timer 2>/dev/null || true
+echo "✅ 定时器已停止"
+
+# ── 删除所有 systemd unit 文件 ───────────────────────────────
 echo "删除 systemd 服务配置..."
 rm -f /etc/systemd/system/memory-sinovec.service
+# 删除自动记忆相关 unit（使用 glob 防止重命名后漏删）
+rm -f /etc/systemd/system/sinovec-extract.service \
+       /etc/systemd/system/sinovec-extract.timer \
+       /etc/systemd/system/sinovec-index.service \
+       /etc/systemd/system/sinovec-index.timer
+# glob 兼容：删除所有 sinovec-* 相关的 service 和 timer
+rm -f /etc/systemd/system/sinovec-*.service \
+       /etc/systemd/system/sinovec-*.timer
 systemctl daemon-reload
 echo "✅ systemd 配置已删除"
 
@@ -58,12 +78,23 @@ else
 fi
 
 # ── 删除数据库（可选）──────────────────────────────────────
-read -p "是否删除数据库 memory？[y/N] " DEL_DB
+read -p "是否删除数据库 $DB_NAME_TO_DROP？[y/N] " DEL_DB
 DEL_DB="${DEL_DB:-N}"
 if [[ "$DEL_DB" == "y" || "$DEL_DB" == "Y" ]]; then
-    echo "删除数据库..."
-    sudo -u postgres psql -c "DROP DATABASE IF EXISTS memory;" 2>/dev/null || true
-    echo "✅ 数据库已删除"
+    echo "删除数据库 $DB_NAME_TO_DROP..."
+    sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME_TO_DROP;" 2>/dev/null || true
+    echo "✅ 数据库 $DB_NAME_TO_DROP 已删除"
+fi
+
+# ── 删除 OpenClaw 记忆技能（如果存在）───────────────────────
+OPENCLAW_SKILL_DIR="/root/.openclaw/skills/sinovec-memory"
+if [ -d "$OPENCLAW_SKILL_DIR" ]; then
+    read -p "是否删除 OpenClaw 记忆技能 $OPENCLAW_SKILL_DIR？[y/N] " DEL_SKILL
+    DEL_SKILL="${DEL_SKILL:-N}"
+    if [[ "$DEL_SKILL" == "y" || "$DEL_SKILL" == "Y" ]]; then
+        rm -rf "$OPENCLAW_SKILL_DIR"
+        echo "✅ OpenClaw 记忆技能已删除"
+    fi
 fi
 
 echo ""

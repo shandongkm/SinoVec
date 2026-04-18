@@ -95,8 +95,22 @@ else
 fi
 
 # ── 数据库配置（默认值与 memory_sinovec.py 一致）─────────────
-read -p "数据库端口 [$DEFAULT_DB_PORT]: " DB_PORT
-DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
+# 端口验证：确保用户输入的端口有 PostgreSQL 在监听
+_current_pg_port=$(sudo -u postgres psql -t -c 'SHOW port;' 2>/dev/null | tr -d ' ')
+_valid_port=false
+while [ "$_valid_port" = "false" ]; do
+    read -p "数据库端口 [$DEFAULT_DB_PORT]: " DB_PORT
+    DB_PORT="${DB_PORT:-$DEFAULT_DB_PORT}"
+    # 验证端口是否可达（TCP 握手测试）
+    if timeout 2 bash -c "echo >/dev/tcp/127.0.0.1/$DB_PORT" 2>/dev/null; then
+        echo "✅ 端口 $DB_PORT 可达"
+        _valid_port=true
+    else
+        echo "⚠️  端口 $DB_PORT 不可访问"
+        echo "   PostgreSQL 当前监听端口: $_current_pg_port"
+        echo "   请输入正确的端口号，或直接回车使用默认值 [$DEFAULT_DB_PORT]"
+    fi
+done
 
 read -p "数据库用户 [$DEFAULT_DB_USER]: " DB_USER
 DB_USER=${DB_USER:-$DEFAULT_DB_USER}
@@ -130,6 +144,128 @@ echo "导入数据库表结构..."
 PGPASSWORD="$DB_PASS" psql -U "$DB_USER" -d "$DB_NAME" -f "$CURRENT_DIR/rebuild_memory_sinovec.sql"
 echo "✅ 表结构已创建"
 
+# ── zhparser 可选安装 ──────────────────────────────────────
+ZH_INSTALL_LOG="/tmp/zhparser-install.log"
+ZH_INSTALLED=false
+read -p "是否安装 zhparser（中文分词插件，提升搜索精度）？[Y/n]: " INSTALL_ZHPARSER
+INSTALL_ZHPARSER="${INSTALL_ZHPARSER:-Y}"
+
+if [[ "$INSTALL_ZHPARSER" =~ ^[Yy]$ ]]; then
+    echo "正在安装 zhparser（详细日志: $ZH_INSTALL_LOG）..."
+    : > "$ZH_INSTALL_LOG"
+
+    # 检查编译依赖
+    if ! command -v git &> /dev/null; then
+        echo "安装 git..."
+        apt-get install -y git 2>> "$ZH_INSTALL_LOG" || true
+    fi
+    if ! command -v make &> /dev/null; then
+        echo "安装 build-essential..."
+        apt-get install -y build-essential 2>> "$ZH_INSTALL_LOG" || true
+    fi
+
+    # 查找 postgresql-server-dev
+    PG_DEV=""
+    for ver in 16 15 14 13; do
+        if dpkg -l "postgresql-server-dev-$ver" 2>/dev/null | grep -q "^ii"; then
+            PG_DEV="postgresql-server-dev-$ver"
+            break
+        fi
+    done
+    if [ -z "$PG_DEV" ]; then
+        echo "安装 postgresql-server-dev..."
+        apt-get install -y postgresql-server-dev-16 2>> "$ZH_INSTALL_LOG" || {
+            echo "⚠️  postgresql-server-dev-16 安装失败，尝试 15..."
+            apt-get install -y postgresql-server-dev-15 2>> "$ZH_INSTALL_LOG" || true
+            PG_DEV="postgresql-server-dev-15"
+        }
+    else
+        echo "✅ 找到 $PG_DEV"
+    fi
+
+    # 编译 zhparser
+    cd /tmp
+    rm -rf zhparser 2>/dev/null || true
+    echo "[INFO] git clone zhparser..." >> "$ZH_INSTALL_LOG"
+    if git clone --depth 1 https://github.com/amutu/zhparser.git 2>> "$ZH_INSTALL_LOG"; then
+        cd zhparser
+        make clean >> "$ZH_INSTALL_LOG" 2>&1 || true
+        if make >> "$ZH_INSTALL_LOG" 2>&1 && make install >> "$ZH_INSTALL_LOG" 2>&1; then
+            ZH_INSTALLED=true
+            echo "✅ zhparser 编译安装成功"
+        else
+            echo "⚠️  zhparser make/make install 失败，详见 $ZH_INSTALL_LOG"
+        fi
+    else
+        echo "⚠️  git clone zhparser 失败，详见 $ZH_INSTALL_LOG"
+    fi
+    rm -rf /tmp/zhparser
+    cd /
+
+    # 注册数据库扩展
+    if [ "$ZH_INSTALLED" = "true" ]; then
+        echo "注册 zhparser 数据库扩展..."
+        if sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS zhparser;" 2>> "$ZH_INSTALL_LOG"; then
+            echo "✅ zhparser 数据库扩展注册成功"
+        else
+            echo "⚠️  zhparser 扩展注册失败，详见 $ZH_INSTALL_LOG"
+            ZH_INSTALLED=false
+        fi
+    fi
+fi
+
+# ── 创建 chinese_zh 配置 + 添加 fts 列 ──────────────────
+echo "配置全文检索列..."
+TS_CONFIG="simple"
+if [ "$ZH_INSTALLED" = "true" ]; then
+    CONFIG_OK=$(sudo -u postgres psql -t -c "
+        SELECT 1 FROM pg_ts_config WHERE cfgname='chinese_zh';
+    " 2>/dev/null || echo "")
+    if [ "$CONFIG_OK" != "1" ]; then
+        echo "创建 chinese_zh 文本搜索配置..."
+        sudo -u postgres psql << 'ZHPARSER_EOF' 2>> "$ZH_INSTALL_LOG" || true
+DO $$
+BEGIN
+    CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);
+    ALTER TEXT SEARCH CONFIGURATION chinese_zh
+        ALTER MAPPING FOR asciiword, word WITH simple;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '创建 chinese_zh 配置失败: %', SQLERRM;
+END $$;
+ZHPARSER_EOF
+    fi
+    CONFIG_OK=$(sudo -u postgres psql -t -c "
+        SELECT 1 FROM pg_ts_config WHERE cfgname='chinese_zh';
+    " 2>/dev/null || echo "")
+    [ "$CONFIG_OK" = "1" ] && TS_CONFIG="chinese_zh"
+fi
+
+if [ "$ZH_INSTALLED" != "true" ]; then
+    echo "⚠️  zhparser 未安装，使用 simple 分词配置"
+    echo "   后期安装 zhparser 后运行: sudo $PREFIX/fix-zhparser.sh"
+fi
+
+# 添加 fts 列（zhparser 不可用时自动降级到 simple）
+PGPASSWORD="$DB_PASS" psql -U "$DB_USER" -d "$DB_NAME" << EOFTS
+DO \$\$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='sinovec' AND column_name='fts'
+    ) THEN
+        ALTER TABLE sinovec ADD COLUMN fts tsvector
+            GENERATED ALWAYS AS (
+                to_tsvector('${TS_CONFIG}', coalesce(payload->>'data', ''))
+            ) STORED;
+        CREATE INDEX IF NOT EXISTS idx_sinovec_fts ON sinovec USING gin (fts);
+        RAISE NOTICE 'fts 列创建成功（使用 ${TS_CONFIG} 配置）';
+    ELSE
+        RAISE NOTICE 'fts 列已存在，跳过';
+    END IF;
+END \$\$;
+EOFTS
+echo "✅ fts 列配置完成（${TS_CONFIG}）"
+
 # ── 安装 Python 依赖 ────────────────────────────────────────
 echo "安装 Python 依赖..."
 if [ "$USE_VENV" = true ]; then
@@ -141,57 +277,73 @@ fi
 
 # ── Ollama 可选安装 ────────────────────────────────────────
 OLLAMA_MODEL_SELECTED=""
-read -p "是否安装 Ollama（本地 LLM，用于查询扩展和结果重排）？[y/N]: " INSTALL_OLLAMA
-if [[ "$INSTALL_OLLAMA" == "y" || "$INSTALL_OLLAMA" == "Y" ]]; then
-    if command -v ollama &> /dev/null; then
-        echo "✅ Ollama 已安装"
-    else
-        echo "正在安装 Ollama..."
-        # 下载安装脚本到临时文件，先审查后执行
+OLLAMA_INSTALLED_NOW=false
+
+if command -v ollama &> /dev/null; then
+    echo "✅ Ollama 已安装 ($(ollama version 2>/dev/null | head -1))"
+    _ollama_installed=true
+else
+    _ollama_installed=false
+    echo "Ollama 可选安装（用于 LLM 查询扩展和结果重排）"
+    echo "  注意：安装需要访问 github.com（国内可能需要代理）"
+    read -p "是否现在安装 Ollama？[y/N]: " INSTALL_OLLAMA
+    if [[ "$INSTALL_OLLAMA" =~ ^[Yy]$ ]]; then
+        echo "正在安装 Ollama（下载约 50MB 安装包）..."
         curl -fsSL https://ollama.com/install.sh -o /tmp/ollama_install.sh
         if [ -s /tmp/ollama_install.sh ]; then
-            echo "✅ Ollama 安装脚本已下载，准备执行..."
-            sh /tmp/ollama_install.sh
+            sh /tmp/ollama_install.sh && OLLAMA_INSTALLED_NOW=true || {
+                echo "⚠️  Ollama 安装失败，请检查网络或手动安装"
+                echo "   手动安装: curl -fsSL https://ollama.com/install.sh | sh"
+            }
             rm -f /tmp/ollama_install.sh
         else
-            echo "❌ 下载 Ollama 安装脚本失败，请检查网络"
-            exit 1
+            echo "⚠️  下载 Ollama 安装脚本失败（网络问题），跳过安装"
         fi
-
-        # 尝试启用并启动 Ollama 服务（需要 linger 权限）
-        if systemctl --user enable ollama 2>/dev/null; then
-            systemctl --user start ollama
-            echo "✅ Ollama 服务已启用并启动"
-        else
-            echo "⚠️  无法以 systemd user 服务运行 Ollama（需 linger 权限）"
-            echo "   请手动运行以下命令启动 Ollama:"
-            echo "   ollama serve &"
-        fi
-        echo "✅ Ollama 安装完成"
+    else
+        echo "⚠️  跳过 Ollama 安装，LLM 扩展功能将自动降级"
     fi
+fi
 
-    echo "请选择 LLM 模型："
-    echo "  1) qwen2.5:7b（精度更高，需约6GB 磁盘空间）"
-    echo "  2) qwen2.5:3b（轻量省资源，需约2GB 磁盘空间）"
-    read -p "选择 [1/2]: " MODEL_CHOICE
+# 模型选择（仅当 Ollama 已安装，或用户选择安装 Ollama 后才进入此步）
+if command -v ollama &> /dev/null; then
+    echo ""
+    echo "请选择 Ollama 模型（决定向量检索精度）："
+    echo "  1) qwen2.5:7b（推荐，精度高，显存占用约 4-6GB）"
+    echo "  2) qwen2.5:3b（轻量，显存占用约 2-3GB，速度快）"
+    echo "  3) qwen2.5:1.5b（极轻，省资源，适合内存有限机器）"
+    echo "  4) 暂不拉取模型（后期手动 ollama pull）"
+    read -p "选择 [1-4，默认 1]: " MODEL_CHOICE
     case "$MODEL_CHOICE" in
-        2)
-            OLLAMA_MODEL_SELECTED="qwen2.5:3b"
-            ;;
-        *)
-            OLLAMA_MODEL_SELECTED="qwen2.5:7b"
-            ;;
+        2)  OLLAMA_MODEL_SELECTED="qwen2.5:3b" ;;
+        3)  OLLAMA_MODEL_SELECTED="qwen2.5:1.5b" ;;
+        4)  echo "可后期手动拉取: ollama pull qwen2.5:7b" ;;
+        *)  OLLAMA_MODEL_SELECTED="qwen2.5:7b" ;;
     esac
 
-    echo "正在拉取模型 $OLLAMA_MODEL_SELECTED（首次约需 2-6 分钟，请耐心等待）..."
-    if ollama pull "$OLLAMA_MODEL_SELECTED"; then
-        echo "✅ 模型拉取完成"
-    else
-        echo "⚠️  模型拉取失败，请检查网络后手动运行: ollama pull $OLLAMA_MODEL_SELECTED"
+    if [ -n "$OLLAMA_MODEL_SELECTED" ]; then
+        # 仅在新安装 Ollama 时自动拉取，已有模型时跳过
+        if [ "$OLLAMA_INSTALLED_NOW" = "true" ]; then
+            echo "正在拉取模型 $OLLAMA_MODEL_SELECTED（首次约需 2-8 分钟，请耐心等待）..."
+            if ollama pull "$OLLAMA_MODEL_SELECTED"; then
+                echo "✅ 模型拉取完成"
+            else
+                echo "⚠️  模型拉取失败，请稍后运行: ollama pull $OLLAMA_MODEL_SELECTED"
+            fi
+        else
+            # Ollama 已存在，检查模型是否已拉取
+            if ollama list 2>/dev/null | grep -q "$OLLAMA_MODEL_SELECTED"; then
+                echo "✅ 模型 $OLLAMA_MODEL_SELECTED 已存在"
+            else
+                echo "⚠️  模型 $OLLAMA_MODEL_SELECTED 未拉取"
+                read -p "是否现在拉取？[Y/n]: " PULL_NOW
+                PULL_NOW="${PULL_NOW:-Y}"
+                if [[ "$PULL_NOW" =~ ^[Yy]$ ]]; then
+                    echo "正在拉取（首次约需 2-8 分钟）..."
+                    ollama pull "$OLLAMA_MODEL_SELECTED" && echo "✅ 完成" || echo "⚠️  失败，手动运行: ollama pull $OLLAMA_MODEL_SELECTED"
+                fi
+            fi
+        fi
     fi
-else
-    echo "⚠️  跳过 Ollama 安装"
-    echo "   LLM 扩展和重排功能将自动降级（仅使用向量+BM25 检索）"
 fi
 
 # ── 复制代码到安装目录 ─────────────────────────────────────
@@ -204,6 +356,12 @@ if [ -f /etc/default/sinovec ]; then
     echo "备份已有配置: /etc/default/sinovec.bak"
     cp /etc/default/sinovec /etc/default/sinovec.bak
 fi
+
+# ── 生成 API 密钥 ──────────────────────────────────────────
+MEMORY_API_KEY=$(openssl rand -hex 16 2>/dev/null \
+    || python3 -c "import secrets; print(secrets.token_hex(16))" \
+    || printf 'sinovec_%08x%08x' $RANDOM $RANDOM $RANDOM)
+echo "API Key: $MEMORY_API_KEY"
 
 # ── 生成环境变量文件 ────────────────────────────────────────
 echo "创建环境变量配置 /etc/default/sinovec..."
@@ -232,7 +390,22 @@ MEMORY_DB_PASS=$DB_PASS
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=${OLLAMA_MODEL_SELECTED:-qwen2.5:7b}
 OLLAMA_FALLBACK_MODELS=qwen2.5:3b
+
+# ── 服务配置 ────────────────────────────────────────────────
+MEMORY_API_KEY=${MEMORY_API_KEY}
+MEMORY_API_PORT=18793
+DEFAULT_DB_PORT=${DB_PORT:-5433}
 EOF
+chmod 600 /etc/default/sinovec
+
+# ── 生成普通用户可读的 skill 配置（供 OpenClaw skill 脚本使用）──────
+# 仅包含 API Key 和端口，不含数据库密码（skill 脚本只需要 API Key 做 HTTP 认证）
+cat > "$PREFIX/config.env" << EOF2
+MEMORY_API_KEY=${MEMORY_API_KEY}
+MEMORY_API_PORT=18793
+DEFAULT_DB_PORT=${DB_PORT:-5433}
+EOF2
+chmod 600 "$PREFIX/config.env"
 
 # ── 生成 systemd service 文件（路径直接写死）─────────────────
 echo "配置 systemd 服务..."
@@ -258,6 +431,85 @@ systemctl daemon-reload
 systemctl enable memory-sinovec
 systemctl start memory-sinovec
 
+# ── 自动记忆提取与会话索引定时器 ──────────────────────────────
+read -p "是否启用自动记忆提取（每小时）和会话索引（每5分钟）？[y/N] " ENABLE_AUTO
+if [[ "$ENABLE_AUTO" =~ ^[Yy]$ ]]; then
+    echo "配置自动记忆任务（systemd timer）..."
+
+    # 获取 Python 实际路径（支持 venv）
+    PYTHON_BIN="$($PYTHON_CMD -c 'import sys; print(sys.executable)' 2>/dev/null || echo "$PYTHON_CMD")"
+
+    # extract service + timer（每小时提取一次）
+    cat > /etc/systemd/system/sinovec-extract.service << 'SRVEOF'
+[Unit]
+Description=SinoVec 自动记忆提取
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=REPLACEME
+StandardOutput=journal
+StandardError=journal
+SRVEOF
+    # 替换 ExecStart 占位符
+    sed -i "s|ExecStart=REPLACEME|ExecStart=$PYTHON_BIN $PREFIX/extract_memories_sinovec.py --scan-recent --hours 1|" \
+        /etc/systemd/system/sinovec-extract.service
+    if grep -q "REPLACEME" /etc/systemd/system/sinovec-extract.service; then
+        echo "⚠️  sinovec-extract.service 模板替换失败，请检查 $PREFIX 路径" >&2
+    fi
+
+    cat > /etc/systemd/system/sinovec-extract.timer << 'EOF'
+[Unit]
+Description=SinoVec 自动记忆提取定时器
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+
+    # index service + timer（每5分钟索引会话）
+    cat > /etc/systemd/system/sinovec-index.service << 'SRVEOF2'
+[Unit]
+Description=SinoVec 会话历史索引
+After=network.target postgresql.service
+[Service]
+Type=oneshot
+ExecStart=REPLACEME
+StandardOutput=journal
+StandardError=journal
+SRVEOF2
+    sed -i "s|ExecStart=REPLACEME|ExecStart=$PYTHON_BIN $PREFIX/session_indexer_sinovec.py index|" \
+        /etc/systemd/system/sinovec-index.service
+    if grep -q "REPLACEME" /etc/systemd/system/sinovec-index.service; then
+        echo "⚠️  sinovec-index.service 模板替换失败，请检查 $PREFIX 路径" >&2
+    fi
+
+    cat > /etc/systemd/system/sinovec-index.timer << 'EOF'
+[Unit]
+Description=SinoVec 会话索引定时器
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now sinovec-extract.timer sinovec-index.timer
+
+    if systemctl is-active --quiet sinovec-extract.timer && \
+       systemctl is-active --quiet sinovec-index.timer; then
+        echo "✅ 自动记忆任务已启动"
+    else
+        echo "⚠️  自动记忆任务启动异常，可手动检查: systemctl status sinovec-*.timer"
+    fi
+else
+    echo "⚠️  跳过自动记忆任务"
+    echo "   后期启用: sudo systemctl enable --now sinovec-extract.timer sinovec-index.timer"
+fi
+
 # ── 安装 OpenClaw 记忆技能 ─────────────────────────────────
 OPENCLAW_SKILLS_DIR="/root/.openclaw/skills"
 if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
@@ -265,7 +517,19 @@ if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
     mkdir -p "$OPENCLAW_SKILLS_DIR/sinovec-memory"
     cp -r "$CURRENT_DIR/skill/." "$OPENCLAW_SKILLS_DIR/sinovec-memory/"
 
-    # skill 脚本现在从 /etc/default/sinovec 读取配置，无需 sed 替换
+    # 生成 skill 专用凭证文件（含 DB 密码，供 add_memory.sh CLI fallback 使用）
+    # 注意：此文件权限 600，仅 root 可读写，openclaw 用户通过 HTTP API 添加记忆（不需要此文件）
+    cat > "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env" << 'CREDEOF'
+MEMORY_DB_HOST=127.0.0.1
+MEMORY_DB_PORT=${DB_PORT:-5433}
+MEMORY_DB_NAME=${DB_NAME:-memory}
+MEMORY_DB_USER=${DB_USER:-sinovec}
+MEMORY_DB_PASS=${DB_PASS}
+CREDEOF
+    # 将占位符替换为真实值（变量在 here-doc 中被延迟展开）
+    sed -i "s/\${DB_PORT:-5433}/$DB_PORT/g; s/\${DB_NAME:-memory}/$DB_NAME/g; s/\${DB_USER:-sinovec}/$DB_USER/g; s/\${DB_PASS}/$DB_PASS/g" \
+        "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
+    chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
 
     echo "✅ 记忆技能已安装到: $OPENCLAW_SKILLS_DIR/sinovec-memory"
 else

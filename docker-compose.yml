@@ -8,11 +8,16 @@ services:
       POSTGRES_DB: memory
       POSTGRES_USER: sinovec
       POSTGRES_PASSWORD: ${DB_PASS:-your_secure_password_here}
+    # 主机 5433 → 容器内 PostgreSQL 5432（主机用 5433 访问）
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ../rebuild_memory_sinovec.sql:/docker-entrypoint-initdb.d/init.sql
+      # 初始化脚本按数字顺序执行：
+      # 1. 创建表结构（不含 fts 列，zhparser 无关）
+      - ./rebuild_memory_sinovec.sql:/docker-entrypoint-initdb.d/01-rebuild.sql
+      # 2. 安装 zhparser 并添加 fts 列（如 zhparser 不可用则降级到 simple）
+      - ./init-zhparser.sh:/docker-entrypoint-initdb.d/02-zhparser.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sinovec -d memory"]
       interval: 10s
@@ -20,7 +25,7 @@ services:
       retries: 5
 
   sinovec:
-    build: ..
+    build: .
     container_name: sinovec-api
     environment:
       MEMORY_DB_HOST: postgres
@@ -28,14 +33,32 @@ services:
       MEMORY_DB_NAME: memory
       MEMORY_DB_USER: sinovec
       MEMORY_DB_PASS: ${DB_PASS:-your_secure_password_here}
+      # 工作区路径（容器内存储整理后的记忆层级文件）
       MEMORY_WORKSPACE: /data/workspace
+      # 会话目录（需挂载主机目录才有效，详见 README）
+      # SESSIONS_DIR: /root/.openclaw/agents/main/sessions
     volumes:
       - ./workspace:/data/workspace
       - ~/.cache/fastembed:/root/.cache/fastembed
+      # 如需会话自动索引，将主机会话目录挂载到容器内：
+      # - ~/.openclaw/agents/main/sessions:/root/.openclaw/agents/main/sessions:ro
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
 
+  # Ollama LLM 服务（可选，启用后 SinoVec 自动开启 LLM 查询扩展和结果重排）
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sinovec-ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    # 注意：qwen2.5 模型不会自动拉取，首次使用前需手动执行：
+    #   docker-compose exec ollama ollama pull qwen2.5:7b
+    restart: unless-stopped
+    profiles:
+      - llm  # 仅 docker-compose --profile llm up 时启动（节省资源）
+
 volumes:
   pgdata:
+  ollama-data:

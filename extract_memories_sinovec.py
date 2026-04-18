@@ -10,17 +10,33 @@ from datetime import datetime
 # ── 配置（统一从环境变量读取）───────────────────────────────────────
 from common import get_conn, get_embedding
 
-SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
-DEDUP_WINDOW_HOURS = 6  # 6小时内重复内容跳过
+def _detect_sessions_dir() -> str:
+    """按优先级尝试找到包含 .jsonl 文件的 session 目录"""
+    candidates = [
+        os.getenv("SESSIONS_DIR"),
+        "/root/.openclaw/agents/main/sessions",
+        os.path.expanduser("~/.openclaw/agents/main/sessions"),
+    ]
+    for d in candidates:
+        if d and os.path.isdir(d) and glob.glob(os.path.join(d, "*.jsonl")):
+            return d
+    return "/root/.openclaw/agents/main/sessions"
+
+SESSIONS_DIR = _detect_sessions_dir()
+DEDUP_WINDOW_HOURS = int(os.getenv("MEMORY_DEDUP_WINDOW_HOURS", "6"))
 
 def is_recent(source_id: str) -> bool:
-    """检查是否在 DEDUP_WINDOW_HOURS 内已提取过（按 source_id 查 payload）"""
+    """
+    检查是否在 DEDUP_WINDOW_HOURS 内已提取过（按 source_id 查 created_at）。
+    修复：原实现错误使用 last_access_time（该字段从不更新，永远为 NULL），
+    导致去重窗口完全失效。现改用 created_at（INSERT 时自动写入）。
+    """
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
             SELECT 1 FROM sinovec
             WHERE payload->>'source_id' = %s
-              AND last_access_time > NOW() - INTERVAL %s
+              AND created_at > NOW() - INTERVAL %s
             LIMIT 1
         """, (source_id, f"{DEDUP_WINDOW_HOURS} hours"))
         exists = cur.fetchone() is not None
@@ -96,9 +112,9 @@ def scan_sessions(hours: int = 1) -> list[dict]:
                         for mem in extract_from_text(text_content):
                             if len(mem) > 10:
                                 memories.append({"text": mem, "source": os.path.basename(path)})
-                    except:
+                    except Exception:
                         pass
-        except:
+        except Exception:
             pass
     return memories
 

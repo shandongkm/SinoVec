@@ -66,7 +66,7 @@ OVERLAP_LO             = float(_E("MEM_OVERLAP_LO",           "0.30"))
 
 # ── 时间与时效 ────────────────────────────────────────────
 DECAY_HALF_LIFE_DAYS   = int(_E("MEM_DECAY_HALF_LIFE_DAYS",  "30"))
-DEDUP_WINDOW_HOURS     = int(_E("MEM_DEDUP_WINDOW_HOURS",     "1"))
+DEDUP_WINDOW_HOURS     = int(_E("MEM_DEDUP_WINDOW_HOURS",     "6"))  # 与 extract_memories_sinovec.py 保持一致
 HOT_MAX_DAYS           = int(_E("MEM_HOT_MAX_DAYS",           "2"))
 WARM_MAX_DAYS          = int(_E("MEM_WARM_MAX_DAYS",          "7"))
 ACCESS_INTERVAL_HOURS  = int(_E("MEM_ACCESS_INTERVAL_HOURS",  "1"))
@@ -81,7 +81,7 @@ MIN_CONTENT_CHARS    = int(_E("MEM_MIN_CONTENT_CHARS",    "15"))
 SHORT_CONTENT_CHARS  = int(_E("MEM_SHORT_CONTENT_CHARS",  "30"))
 
 # ── 检索权重 ───────────────────────────────────────────────
-BM25_MANUAL_WEIGHT = float(_E("MEM_BM25_MANUAL_WEIGHT", "0.30"))
+# BM25_MANUAL_WEIGHT = float(_E("MEM_BM25_MANUAL_WEIGHT", "0.30"))  # 预留，未启用
 VEC_W_SHORT  = float(_E("MEM_VEC_W_SHORT",  "0.85")); BM25_W_SHORT  = float(_E("MEM_BM25_W_SHORT",  "0.15"))
 VEC_W_PROPER = float(_E("MEM_VEC_W_PROPER", "0.35")); BM25_W_PROPER = float(_E("MEM_BM25_W_PROPER", "0.65"))
 VEC_W_OVERLAP_LO = float(_E("MEM_VEC_W_OVERLAP_LO", "0.55")); BM25_W_OVERLAP_LO = float(_E("MEM_BM25_W_OVERLAP_LO", "0.45"))
@@ -96,7 +96,7 @@ MMR_LAMBDA            = float(_E("MEM_MMR_LAMBDA",           "0.50"))
 TOP_K_RERANK           = int(_E("MEM_TOP_K_RERANK",          "20"))
 QUERY_EXPANSION_MAX    = int(_E("MEM_QUERY_EXPANSION_MAX",    "5"))
 MIN_QUERY_TERM_LEN     = int(_E("MEM_MIN_QUERY_TERM_LEN",     "2"))
-SESSION_FRAGMENT_LIMIT = int(_E("MEM_SESSION_FRAGMENT_LIMIT",  "20"))
+# SESSION_FRAGMENT_LIMIT = int(_E("MEM_SESSION_FRAGMENT_LIMIT",  "20"))  # 预留，未使用
 RECALL_ANALYSIS_LIMIT  = int(_E("MEM_RECALL_ANALYSIS_LIMIT",  "50"))
 
 # ── LLM 配置 ───────────────────────────────────────────────
@@ -106,8 +106,7 @@ OLLAMA_MAX_TOKENS  = int(_E("MEM_OLLAMA_MAX_TOKENS",   "500"))
 # ═══════════════════════════════════════════════════════════
 
 
-# ── DB 配置 ──────────────────────────────────────────────
-# ── 配置（支持环境变量覆盖）─────────────────────────────────────
+# ── DB 配置（支持环境变量覆盖）─────────────────────────────────────
 _db_pass = os.getenv("MEMORY_DB_PASS", "")
 if not _db_pass:
     raise RuntimeError(
@@ -122,6 +121,55 @@ DB_CONFIG = {
     "user": os.getenv("MEMORY_DB_USER", "sinovec"),
     "password": _db_pass,
 }
+
+# ── 运行时检测 fts 列使用的分词配置 ─────────────────────────────────
+# fts 列可能用 chinese_zh（zhparser）或 simple，取决于安装时 zhparser 是否可用
+# 检测逻辑：从 pg_attrdef 读取 fts 列的 GENERATED ALWAYS 表达式，反推配置名
+def _detect_ts_config() -> str:
+    """
+    运行时检测 sinovec.fts 列实际使用的文本搜索配置名。
+    检测失败时默认返回 'simple'（保守降级）。
+    仅在模块加载时执行一次，后续使用全局常量 TS_CONFIG。
+    """
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT pg_get_expr(adbin, adrelid)
+                FROM pg_attrdef
+                WHERE adrelid = 'sinovec'::regclass
+                  AND adnum = (
+                      SELECT attnum FROM pg_attribute
+                      WHERE attrelid = 'sinovec'::regclass
+                        AND attname = 'fts'
+                  )
+            """)
+            row = cur.fetchone()
+            cur.close()
+            if row and row[0]:
+                expr = str(row[0])
+                if 'chinese_zh' in expr:
+                    logger.info("检测到 fts 列使用 chinese_zh 分词配置")
+                    return "chinese_zh"
+            logger.warning("fts 列未找到或配置未知，使用 simple 分词")
+    except Exception as e:
+        logger.warning(f"TS 配置检测失败，使用 simple: {e}")
+    return "simple"
+
+TS_CONFIG = _detect_ts_config()  # 全局常量，供 BM25 搜索使用
+if TS_CONFIG == "simple":
+    import sys
+    logger.warning(
+        "fts 列使用 simple 分词配置（无 zhparser）。"
+        "如已安装 zhparser 请运行 fix-zhparser.sh 后执行: sudo systemctl restart memory-sinovec"
+    )
+    print(
+        "WARNING: fts 列使用 simple 分词配置（无 zhparser）。"
+        "如已安装 zhparser 请运行 fix-zhparser.sh 后执行: sudo systemctl restart memory-sinovec",
+        file=sys.stderr
+    )
+else:
+    logger.info(f"fts 列使用 {TS_CONFIG} 分词配置")
 
 # ── 连接池（线程安全）────────────────────────────────────────────
 _db_pool = None
@@ -282,6 +330,42 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
             else:
                 self._send_json({"error": "not found"}, 404)
 
+        def do_POST(self):
+            """POST /memory - 添加记忆（API Key 认证，无需 DB 密码）"""
+            if not self._check_auth():
+                self._send_json({"error": "unauthorized"}, 401)
+                return
+            parsed = urlparse(self.path)
+            if parsed.path not in ("/memory", "/add"):
+                self._send_json({"error": "not found"}, 404)
+                return
+            # 读取 body
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length == 0:
+                self._send_json({"error": "empty body"}, 400)
+                return
+            if content_length > 65536:
+                self._send_json({"error": "body too large (max 64KB)"}, 413)
+                return
+            try:
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                self._send_json({"error": f"invalid JSON: {e}"}, 400)
+                return
+            text = data.get("text", "").strip() if isinstance(data, dict) else ""
+            user = data.get("user_id", "主人") if isinstance(data, dict) else "主人"
+            if not text:
+                self._send_json({"error": "text is required"}, 400)
+                return
+            try:
+                mid = cmd_add(text, user=user, force=False)
+                self._send_json({"id": mid, "status": "added"}, 201)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, 409)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+
         def _send_json(self, data, code=200):
             body = json.dumps(data, ensure_ascii=False).encode()
             self.send_response(code)
@@ -371,7 +455,7 @@ def compute_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-# ── LLM 配置（Ollama qwen2.5:7b）────────────────────────────
+# ── LLM 配置（Ollama，默认 qwen2.5:7b）──────────────────────────────
 _llm = None
 _llm_lock = threading.Lock()
 
@@ -410,7 +494,7 @@ def _ollama_generate(prompt: str) -> str:
     """
     # 第0级：检测 Ollama 服务是否可用
     if not _ollama_check_available():
-        logger.info("Ollama 服务不可用，LLM 扩展/重排已禁用（仅向量+BM25 检索）")
+        logger.warning("Ollama 服务不可用，LLM 扩展/重排已禁用（仅向量+BM25 检索）")
         return ""
 
     models_to_try = [_ollama_model] + _ollama_fallback
@@ -443,14 +527,14 @@ def _ollama_generate(prompt: str) -> str:
             logger.warning(f"Ollama {model} 调用失败: {e}，尝试下一级...")
 
     # 所有模型均失败，降级
-    logger.info("所有 Ollama 模型均不可用，LLM 扩展/重排已禁用（仅向量+BM25 检索）")
+    logger.warning("所有 Ollama 模型均不可用，LLM 扩展/重排已禁用（仅向量+BM25 检索）")
     return ""
 
 
 # ── LRU 缓存的查询扩展 ─────────────────────────────────────
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=128)  # 无 TTL，按访问频率淘汰；缓存命中时直接返回，不调用 LLM
 def _query_expand_cached(query: str) -> tuple:
-    """带缓存的 LLM 查询扩展，TTL=DEDUP_WINDOW_HOURS 小时"""
+    """带 LRU 缓存的 LLM 查询扩展（缓存大小 128 条）"""
     try:
         return tuple(_query_expand_impl(query))
     except Exception:
@@ -518,7 +602,7 @@ def _log_lineage(source_id: str, operation: str, reason: str = "",
             finally:
                 cur.close()
     except Exception as e:
-        logging.warning(f"血缘记录失败: {e}")
+        logger.warning(f"血缘记录失败: {e}")
 
 
 # ── 重排：同步完整重排 ─────────────────────────────────────
@@ -534,13 +618,14 @@ def _rerank(query: str, candidates: list) -> list[dict]:
             m['rerank_score'] = m.get('score', RERANK_DEFAULT_SCORE)
         return candidates
 
-    # 降级：候选 <= 5，跳过 LLM 调用，直接用混合分数
+    # 降级：候选 <= RERANK_MIN_CANDIDATES，跳过 LLM 调用，直接用混合分数
     if len(candidates) <= RERANK_MIN_CANDIDATES:
+        logger.info(f"候选 {len(candidates)} <= {RERANK_MIN_CANDIDATES}，跳过 LLM 重排")
         for m in candidates:
             m['rerank_score'] = m.get('score', RERANK_DEFAULT_SCORE)
         return candidates
 
-    # 候选 > 5：同步调用 LLM 重排
+    # 候选 > RERANK_MIN_CANDIDATES：同步调用 LLM 重排
     return _rerank_impl(query, candidates)
 
 
@@ -921,8 +1006,7 @@ def cmd_promote_by_heat() -> dict:
     按访问热度流转（已废弃，请使用 cmd_organize）
     保留此函数仅为 CLI 向后兼容。
     """
-    import logging
-    logging.warning("`promote-heat` 命令已废弃，请使用 `organize` 代替")
+    logger.warning("`promote-heat` 命令已废弃，请使用 `organize` 代替")
     return cmd_organize()
 
 
@@ -1003,11 +1087,19 @@ def cmd_organize() -> dict:
     # ── L1 向量去重 ─────────────────────────────────────────────
     dedup_result = cmd_dedup()
 
+    # 补充 promote-heat CLI 兼容字段
+    # cmd_promote_by_heat() 是 cmd_organize() 的别名，CLI 输出依赖这些键
+    total_promoted = sum(moved.values())
+
     return {
         "moved": moved,
         "removed": removed,
         "dedup": dedup_result,
         "timestamp": now_iso,
+        # promote-heat CLI 兼容
+        "total": total_promoted,
+        "promoted": {},       # 旧版命名，已废弃，使用 moved 代替
+        "skipped": 0,
     }
 
 
@@ -1168,7 +1260,7 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         if user_id:
             cur.execute("""
                 SELECT id, GREATEST(ts_rank_cd(fts, query), 0.001) AS bm25_rank, payload
-                FROM sinovec, to_tsquery('chinese_zh', %s) query
+                FROM sinovec, to_tsquery(TS_CONFIG, %s) query
                 WHERE fts @@ query AND payload->>'user_id' = %s
                 ORDER BY bm25_rank DESC
                 LIMIT %s
@@ -1176,7 +1268,7 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         else:
             cur.execute("""
                 SELECT id, GREATEST(ts_rank_cd(fts, query), 0.001) AS bm25_rank, payload
-                FROM sinovec, to_tsquery('chinese_zh', %s) query
+                FROM sinovec, to_tsquery(TS_CONFIG, %s) query
                 WHERE fts @@ query
                 ORDER BY bm25_rank DESC
                 LIMIT %s
@@ -1189,14 +1281,14 @@ def _bm25_search(cur, tsquery_str: str, jieba_terms: list, top_k: int,
         like_conditions = ' OR '.join([f"payload->>'data' ILIKE %s" for _ in escaped])
         if user_id:
             cur.execute(f"""
-                SELECT id, 0.3 AS bm25_rank, payload
+                SELECT id, 0.5 AS bm25_rank, payload
                 FROM sinovec
                 WHERE ({like_conditions}) AND payload->>'user_id' = %s
                 LIMIT %s
             """, like_values + [user_id, top_k])
         else:
             cur.execute(f"""
-                SELECT id, 0.3 AS bm25_rank, payload
+                SELECT id, 0.5 AS bm25_rank, payload
                 FROM sinovec
                 WHERE {like_conditions}
                 LIMIT %s
@@ -1245,17 +1337,29 @@ def cmd_search(query: str, top_k: int = 5, use_rerank: bool = True, user_id: str
 
     # 混合排序
     scores = {}
-    vec_max = max((float(r[2]) for r in vec_rows), default=1)  # r[2]=vec_dist
-    bm25_max = max((float(r[1]) for r in bm25_rows), default=1)  # r[1]=bm25_rank（不变）
+    seen_ids = set()  # 避免同一记忆在 vec 和 bm25 阶段重复累加
 
+    # ── vec 阶段 ──────────────────────────────────────────────
     for mem_id, vec, vec_dist, payload in vec_rows:  # 4列: id, vector, vec_dist, payload
-        vec_sim = 1 - float(vec_dist)  # cosine distance: 0=相同,1=正交,2=相反 → similarity = 1 - dist
+        vec_sim = 1 - float(vec_dist)
         created_at = payload.get("created_at") if isinstance(payload, dict) else None
         decay = temporal_decay_score(created_at, half_life_days=DECAY_HALF_LIFE_DAYS)
         scores[mem_id] = scores.get(mem_id, 0) + vec_w * vec_sim * decay
+        seen_ids.add(mem_id)
+
+    # ── bm25 阶段 ─────────────────────────────────────────────
+    # bm25_max 仅从 ts_rank 结果计算（排除 ILIKE 固定值 0.5）
+    # ILIKE 行 rank <= 0.001（GREATEST(ts_rank_cd(...), 0.001) 固定最小值）
+    bm25_max = max((float(r[1]) for r in bm25_rows if float(r[1]) > 0.001), default=1.0)
 
     for mem_id, bm25_rank, payload in bm25_rows:
-        bm25_score = float(bm25_rank) / bm25_max if bm25_max > 0 else 0
+        if mem_id in seen_ids:
+            continue  # 该 id 已在 vec 阶段处理过，跳过避免重复累加
+        rank = float(bm25_rank)
+        if rank <= 0.001:  # ILIKE 固定值，不参与归一化竞争
+            bm25_score = 0.05
+        else:
+            bm25_score = rank / bm25_max if bm25_max > 0 else 0
         created_at = payload.get("created_at") if isinstance(payload, dict) else None
         decay = temporal_decay_score(created_at, half_life_days=DECAY_HALF_LIFE_DAYS)
         scores[mem_id] = scores.get(mem_id, 0) + bm25_w * bm25_score * decay
@@ -1545,48 +1649,24 @@ def cmd_recall_analysis(limit: int = 50) -> None:
 def cmd_session_l1_gap(gap_threshold: float = 0.3,
                        overlap_threshold: float = COSINE_DIST_DEEP,
                        limit: int = 500) -> None:
-    """找出 session 片段中有但 L1 记忆中无相似内容的条目"""
-    import json
-    from pathlib import Path
-
-    # 尝试多个可能的 session 索引路径
-    workspace = Path(_WORKSPACE_ENV)
-    idx_paths = [
-        workspace / ".sessions" / "index.jsonl",
-        workspace / "sessions" / "index.jsonl",
-        Path.home() / ".openclaw" / "sessions" / "index.jsonl",
-    ]
-
-    session_fragments = []
-    for idx_path in idx_paths:
-        if idx_path.exists():
-            with open(idx_path) as f:
-                for line in f:
-                    try:
-                        obj = json.loads(line)
-                        if obj.get("text"):
-                            session_fragments.append(obj["text"][:200])
-                    except Exception:
-                        pass
-            break
-
+    """
+    找出 session 片段中有但 L1 记忆中无相似内容的条目。
+    修复：原实现尝试读取不存在的 JSONL 文件或查询不存在的 session_messages 表，
+    现直接查询数据库中 source='session' 的已索引片段（由 session_indexer_sinovec.py 写入）。
+    """
     with get_conn() as conn:
         cur = None
         try:
             cur = conn.cursor()
-            if not session_fragments:
-                try:
-                    cur.execute("""
-                        SELECT left(content, 200)
-                        FROM session_messages
-                        ORDER BY created_at DESC
-                        LIMIT %s
-                    """, (limit,))
-                    session_fragments = [r[0] for r in cur.fetchall() if r[0]]
-                except psycopg2.Error:
-                    print("⚠️ 未找到 session 索引文件，且 session_messages 表不存在")
-                    print("   提示：session 索引由 session_indexer.py 生成，需先运行索引任务")
-                    return
+            # 直接从数据库读取 session_indexer 已索引的片段
+            cur.execute("""
+                SELECT substr(payload->>'data', 1, 200)
+                FROM sinovec
+                WHERE payload->>'source' = 'session'
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (limit,))
+            session_fragments = [r[0] for r in cur.fetchall() if r[0]]
 
             print(f"📊 Session 片段：{len(session_fragments)} 条")
             cur.execute("SELECT count(*) FROM sinovec")
@@ -1847,10 +1927,11 @@ def main():
 
         elif args.cmd == "promote-heat":
             r = cmd_promote_by_heat()
-            print(f"热度流转完成：共处理 {r['total']} 条，已晋崑 {sum(r['promoted'].values())} 条")
+            print(f"热度流转完成：共处理 {r['total']} 条")
             print(f"  跳过（已晋崑）: {r.get('skipped', 0)} 条")
-            for layer, cnt in r['promoted'].items():
-                print(f"  {layer}: {cnt} 条")
+            for layer, cnt in r['moved'].items():
+                if cnt > 0:
+                    print(f"  {layer}: {cnt} 条")
 
         elif args.cmd == "organize":
             r = cmd_organize()
