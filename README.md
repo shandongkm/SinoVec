@@ -1,6 +1,6 @@
 # SinoVec - 高精度中文语义记忆系统
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![版本](https://img.shields.io/badge/version-v1.0.6-blue.svg)](CHANGELOG.md)
