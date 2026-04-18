@@ -20,7 +20,7 @@ cd /root/.openclaw/skills/sinovec-memory
 
 ## API 端点
 
-- **搜索**：`POST /search` — 语义+全文混合检索
+- **搜索**：`GET /search` — 语义+全文混合检索
 - **统计**：`GET /stats` — 记忆总数、召回统计
 - **健康**：`GET /health` — 服务状态
 
@@ -28,7 +28,7 @@ cd /root/.openclaw/skills/sinovec-memory
 
 使用 `X-API-Key` Header 或 `?api_key=` 查询参数。
 
-API Key 存储在 `/root/SinoVec/.env` 的 `MEMORY_API_KEY`。
+API Key 存储在 `/etc/default/sinovec` 的 `MEMORY_API_KEY`。
 API 地址：`http://127.0.0.1:18793`
 
 ## 触发场景

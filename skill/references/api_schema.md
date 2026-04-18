@@ -4,7 +4,7 @@
 
 - **Base URL**: `http://127.0.0.1:18793`
 - **认证**: `X-API-Key` header 或 `?api_key=` 查询参数
-- **认证密钥**: `sinovec_secret_key_2024`
+- **认证密钥**: 见 `/etc/default/sinovec` 中的 `MEMORY_API_KEY`
 
 ## 端点
 
@@ -14,7 +14,8 @@
 
 **参数**:
 - `q` (必填): 查询文本
-- `topK` (可选): 返回数量，默认 3
+- `top_k` (可选): 返回数量，默认 3
+- `user_id` (可选): 按用户过滤
 - `api_key` (必填): 认证密钥
 
 **响应**:
@@ -50,16 +51,7 @@
 
 ### POST /add
 
-添加记忆。
-
-**Body**:
-```json
-{
-  "data": "记忆内容",
-  "user_id": "user123",
-  "source": "memory"
-}
-```
+添加记忆（通过 CLI 调用，非 HTTP）。
 
 ### GET /health
 

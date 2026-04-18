@@ -27,9 +27,11 @@ import argparse
 import logging
 import requests
 
-# 模型下载代理（mihomo）
-os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7890")
-os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7890")
+# 模型下载代理（仅当 HF_HUB_PROXY 环境变量已设置时生效）
+# 国内用户需自行设置：export HF_HUB_PROXY=http://127.0.0.1:7890
+if os.getenv("HF_HUB_PROXY"):
+    os.environ["HTTP_PROXY"] = os.getenv("HF_HUB_PROXY")
+    os.environ["HTTPS_PROXY"] = os.getenv("HF_HUB_PROXY")
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor

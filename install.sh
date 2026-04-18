@@ -204,8 +204,7 @@ if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
     mkdir -p "$OPENCLAW_SKILLS_DIR/sinovec-memory"
     cp -r "$CURRENT_DIR/skill/." "$OPENCLAW_SKILLS_DIR/sinovec-memory/"
 
-    # 修复脚本中的硬编码路径（改为读取环境变量）
-    sed -i 's|MEMORY_DB_PASS=sinovec_secure_pass|MEMORY_DB_PASS='$DB_PASS'|g' "$OPENCLAW_SKILLS_DIR/sinovec-memory/scripts/add_memory.sh" 2>/dev/null || true
+    # skill 脚本现在从 /etc/default/sinovec 读取配置，无需 sed 替换
 
     echo "✅ 记忆技能已安装到: $OPENCLAW_SKILLS_DIR/sinovec-memory"
 else
