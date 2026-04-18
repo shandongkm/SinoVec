@@ -11,19 +11,52 @@
 
 ## ⚡ 快速开始
 
-### 方式一：Docker 一键部署（推荐）
+### 方式一：Docker 一键部署（推荐 ⭐）
+
+#### Gitee用户
+
+```bash
+git clone https://gitee.com/confucius-and-mencius/SinoVec.git
+cd SinoVec
+cp .env.example .env
+docker-compose up -d
+```
+
+#### GitHub用户
 
 ```bash
 git clone https://github.com/shandongkm/SinoVec.git
 cd SinoVec
 cp .env.example .env
-# 编辑 .env，填入数据库密码
 docker-compose up -d
 ```
 
 ### 方式二：手动部署
+#### Gitee用户
 
 ```bash
+git clone https://gitee.com/confucius-and-mencius/SinoVec.git
+cd SinoVec
+
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 初始化数据库（PostgreSQL 14+ required）
+psql -U postgres -c "CREATE DATABASE memory;"
+psql -U postgres -d memory -f rebuild_memory_sinovec.sql
+
+# 3. 配置环境变量
+cp .env.example .env
+# 编辑 .env 填入你的配置
+
+# 4. 启动服务
+python memory_sinovec.py serve --host 127.0.0.1 --port 18793
+```
+#### GitHub 用户
+```bash
+git clone https://github.com/shandongkm/SinoVec.git
+cd SinoVec
+
 # 1. 安装依赖
 pip install -r requirements.txt
 
@@ -39,39 +72,31 @@ cp .env.example .env
 python memory_sinovec.py serve --host 127.0.0.1 --port 18793
 ```
 
-### 方式三：安装脚本（推荐 ⭐）
 
-```bash
-# Gitee（推荐国内用户）
-git clone https://gitee.com/confucius-and-mencius/SinoVec.git
-cd SinoVec
 
-chmod +x install.sh
-sudo ./install.sh
-```
+#### 安装脚本会自动：
 
-安装脚本会自动：
-- 安装 PostgreSQL + pgvector + zhparser
-- 创建数据库和用户
-- 配置 systemd 服务
-- **自动检测并安装 OpenClaw 记忆技能**（如已安装 OpenClaw）
+*   安装 PostgreSQL + pgvector + zhparser
+*   创建数据库和用户
+*   配置 systemd 服务
+*   **自动检测并安装 OpenClaw 记忆技能**（如已安装 OpenClaw）
 
 ## 🤖 LLM 增强（可选）
 
 SinoVec 支持可选的 LLM 增强功能（通过 Ollama 本地推理）：
 
-- **查询扩展**：将短查询展开为多个相关关键词，提升召回率
-- **结果重排**：用 LLM 对候选结果二次打分，提高相关性
+*   **查询扩展**：将短查询展开为多个相关关键词，提升召回率
+*   **结果重排**：用 LLM 对候选结果二次打分，提高相关性
 
 ### 三级降级机制
+*SinoVec 会自动检测安装本地Ollama qwen2.5模型。
+*SinoVec 内置三级降级保障，确保无 LLM 时仍能正常工作：
 
-SinoVec 内置三级降级保障，确保无 LLM 时仍能正常工作：
-
-| 级别 | 条件 | 行为 |
-|------|------|------|
-| 第1级 | Ollama + 主模型（默认 `qwen2.5:7b`）可用 | LLM 扩展 + 重排全开 |
-| 第2级 | 主模型不可用，降级到 `qwen2.5:3b` | LLM 扩展 + 重排全开 |
-| 第3级 | Ollama 未安装或所有模型均失败 | **自动降级**，仅使用向量+BM25 检索 |
+| 级别  | 条件                              | 行为                     |
+| --- | ------------------------------- | ---------------------- |
+| 第1级 | Ollama + 主模型（默认 `qwen2.5:7b`）可用 | LLM 扩展 + 重排全开          |
+| 第2级 | 主模型不可用，降级到 `qwen2.5:3b`         | LLM 扩展 + 重排全开          |
+| 第3级 | Ollama 未安装或所有模型均失败              | **自动降级**，仅使用向量+BM25 检索 |
 
 ### 安装 Ollama（install.sh 交互选择）
 
@@ -114,6 +139,7 @@ curl "http://127.0.0.1:18793/search?q=关键词&top_k=3&api_key=你的密钥"
 ```
 
 **响应示例：**
+
 ```json
 {
   "count": 2,
@@ -146,17 +172,19 @@ SinoVec 提供两种集成方式：
 
 安装 SinoVec 后，如果检测到 OpenClaw，会自动安装记忆技能到 `~/.openclaw/skills/sinovec-memory/`。
 
-**技能触发场景：**
-- 用户说"记得之前..."
-- "之前说过什么关于..."
-- 需要检索历史对话内容
+**技能触发场景举例：**
+
+*   用户说"记得之前..."
+*   "之前说过什么关于..."
+*   "上次我们说的..."
+*   需要检索历史对话内容
 
 **手动触发（在我回复前加上）：**
-```
-/skill sinovec-memory
-```
+
+    /skill sinovec-memory
 
 **或直接使用脚本：**
+
 ```bash
 # 搜索记忆
 ~/.openclaw/skills/sinovec-memory/scripts/search_memories.sh "关键词"
@@ -186,39 +214,38 @@ SinoVec 提供两种集成方式：
 ```
 
 然后重启 OpenClaw Gateway：
+
 ```bash
 systemctl restart openclaw-gateway
 ```
 
 ## 📁 项目结构
 
-```
-SinoVec/
-├── README.md                    # 项目说明
-├── roadmap.md                  # 开发路线图
-├── memory_sinovec.py           # 核心 API 服务
-├── extract_memories_sinovec.py # 自动记忆提取脚本
-├── session_indexer_sinovec.py  # 会话索引脚本
-├── rebuild_memory_sinovec.sql   # 数据库表结构
-├── requirements.txt             # Python 依赖
-├── Dockerfile                  # 容器镜像构建
-├── docker-compose.yml          # Docker 一键部署
-├── install.sh                  # 快速安装脚本（含 OpenClaw 技能安装）
-├── uninstall.sh                 # 卸载脚本
-├── memory-sinovec.service      # systemd 服务配置
-├── CHANGELOG.md               # 版本变更日志
-├── CONTRIBUTING.md             # 贡献指南
-├── LICENSE                    # MIT 许可证
-├── .env.example              # 环境变量配置示例
-├── .gitignore                # Git 忽略配置
-└── skill/                     # OpenClaw 记忆技能
-    ├── SKILL.md               # 技能描述
-    ├── scripts/               # 脚本
-    │   ├── search_memories.sh  # 搜索记忆
-    │   └── add_memory.sh      # 添加记忆
-    └── references/
-        └── api_schema.md      # API 文档
-```
+    SinoVec/
+    ├── README.md                    # 项目说明
+    ├── roadmap.md                  # 开发路线图
+    ├── memory_sinovec.py           # 核心 API 服务
+    ├── extract_memories_sinovec.py # 自动记忆提取脚本
+    ├── session_indexer_sinovec.py  # 会话索引脚本
+    ├── rebuild_memory_sinovec.sql   # 数据库表结构
+    ├── requirements.txt             # Python 依赖
+    ├── Dockerfile                  # 容器镜像构建
+    ├── docker-compose.yml          # Docker 一键部署
+    ├── install.sh                  # 快速安装脚本（含 OpenClaw 技能安装）
+    ├── uninstall.sh                 # 卸载脚本
+    ├── memory-sinovec.service      # systemd 服务配置
+    ├── CHANGELOG.md               # 版本变更日志
+    ├── CONTRIBUTING.md             # 贡献指南
+    ├── LICENSE                    # MIT 许可证
+    ├── .env.example              # 环境变量配置示例
+    ├── .gitignore                # Git 忽略配置
+    └── skill/                     # OpenClaw 记忆技能
+        ├── SKILL.md               # 技能描述
+        ├── scripts/               # 脚本
+        │   ├── search_memories.sh  # 搜索记忆
+        │   └── add_memory.sh      # 添加记忆
+        └── references/
+            └── api_schema.md      # API 文档
 
 ## 🧪 测试
 
@@ -241,11 +268,11 @@ python session_indexer_sinovec.py index --dry-run
 
 ## 🛡️ 安全提示
 
-- **生产环境务必设置 `MEMORY_API_KEY`**，否则只有 `/health` 端点可访问，其他 API 请求会返回 401 未授权错误
-- **不要将 API 服务暴露到公网**
-- `MEMORY_DB_PASS` 环境变量必须设置，否则服务拒绝启动
-- 数据库密码使用强密码
-- 定期备份数据库
+*   **生产环境务必设置 `MEMORY_API_KEY`**，否则只有 `/health` 端点可访问，其他 API 请求会返回 401 未授权错误
+*   **不要将 API 服务暴露到公网**
+*   `MEMORY_DB_PASS` 环境变量必须设置，否则服务拒绝启动
+*   数据库密码使用强密码
+*   定期备份数据库
 
 ## 🤝 贡献
 
