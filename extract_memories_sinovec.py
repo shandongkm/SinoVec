@@ -5,7 +5,7 @@ SinoVec - 自动记忆提取脚本
 """
 
 import os, json, re, glob
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ── 配置（统一从环境变量读取）───────────────────────────────────────
 from common import get_conn, get_embedding
@@ -23,7 +23,7 @@ def _detect_sessions_dir() -> str:
     return "/root/.openclaw/agents/main/sessions"
 
 SESSIONS_DIR = _detect_sessions_dir()
-DEDUP_WINDOW_HOURS = int(os.getenv("MEMORY_DEDUP_WINDOW_HOURS", "6"))
+DEDUP_WINDOW_HOURS = int(os.getenv("MEM_DEDUP_WINDOW_HOURS", "6"))
 
 def is_recent(source_id: str) -> bool:
     """
@@ -50,8 +50,11 @@ def save_memory(text: str, source_id: str, user: str = "主人") -> str:
     pid = str(uuid.uuid4())
     with get_conn() as conn:
         cur = conn.cursor()
+        # payload 中包含 created_at，与 is_recent() 的查询字段对应（一致性）
+        # 注意：sinovec 表的 created_at 列也有 DEFAULT NOW()，两者同步
         payload = json.dumps({"data": text, "user_id": user,
-                              "source": "auto_extract", "source_id": source_id})
+                              "source": "auto_extract", "source_id": source_id,
+                              "created_at": datetime.now(timezone.utc).isoformat()})
         cur.execute("""
             INSERT INTO sinovec (id, vector, payload)
             VALUES (%s, %s::vector, %s::jsonb)

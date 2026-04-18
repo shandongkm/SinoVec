@@ -5,7 +5,7 @@ SinoVec - 会话历史索引器
 """
 
 import os, json, glob, hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
 
@@ -112,14 +112,17 @@ def save_fragment(text: str, session_id: str, source_id: str) -> str:
     import uuid
     vec = get_embedding(text)
     pid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         cur = conn.cursor()
+        # payload 中包含 created_at，与 session 片段查询字段对应（一致性）
         payload = json.dumps({
             "data": text[:500],
             "user_id": "会话",
             "source": "session",
             "session_id": session_id,
-            "source_id": source_id
+            "source_id": source_id,
+            "created_at": now
         })
         cur.execute("""
             INSERT INTO sinovec (id, vector, payload)
