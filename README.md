@@ -1,5 +1,3 @@
-
-
 # SinoVec - 高精度中文语义记忆系统
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -40,12 +38,27 @@ cp .env.example .env
 python memory_sinovec.py serve --host 127.0.0.1 --port 18793
 ```
 
+### 方式三：安装脚本（推荐 ⭐）
+
+```bash
+git clone https://gitee.com/confucius-and-mencius/SinoVec.git
+cd SinoVec
+chmod +x install.sh
+sudo ./install.sh
+```
+
+安装脚本会自动：
+- 安装 PostgreSQL + pgvector + zhparser
+- 创建数据库和用户
+- 配置 systemd 服务
+- **自动检测并安装 OpenClaw 记忆技能**（如已安装 OpenClaw）
+
 ## 📡 API 接口
 
 ### 搜索记忆
 
 ```bash
-curl "http://127.0.0.1:18793/search?q=关键词&top_k=3"
+curl "http://127.0.0.1:18793/search?q=关键词&top_k=3&api_key=你的密钥"
 ```
 
 **响应示例：**
@@ -73,23 +86,34 @@ curl http://127.0.0.1:18793/stats
 # {"total": 3030, "recall_total": 241, "recall_max": 15, "hot_24h": 46}
 ```
 
-## 🔧 配置说明
-
-| 环境变量 | 说明 | 默认值 |
-|----------|------|--------|
-| `MEMORY_DB_HOST` | 数据库地址 | 127.0.0.1 |
-| `MEMORY_DB_PORT` | 数据库端口 | 5433 |
-| `MEMORY_DB_NAME` | 数据库名 | memory |
-| `MEMORY_DB_USER` | 数据库用户 | openclaw |
-| `MEMORY_DB_PASS` | 数据库密码 | (必填) |
-| `MEMORY_API_KEY` | API 认证密钥（可选）。若设置，所有 API 请求（除 `/health`）必须携带密钥。支持 `Authorization: Bearer <key>`、`X-API-Key: <key>`、`?api_key=<key>` 三种方式 | 不设置则仅 `/health` 可访问，其他请求返回 401 |
-| `HF_HUB_PROXY` | HuggingFace 代理 | (可选) |
-
 ## 🔌 与 OpenClaw 集成
 
-将 SinoVec 作为 OpenClaw 的主动记忆插件使用：
+SinoVec 提供两种集成方式：
 
-### 1. 注册插件
+### 方式一：技能集成（推荐）⭐
+
+安装 SinoVec 后，如果检测到 OpenClaw，会自动安装记忆技能到 `~/.openclaw/skills/sinovec-memory/`。
+
+**技能触发场景：**
+- 用户说"记得之前..."
+- "之前说过什么关于..."
+- 需要检索历史对话内容
+
+**手动触发（在我回复前加上）：**
+```
+/skill sinovec-memory
+```
+
+**或直接使用脚本：**
+```bash
+# 搜索记忆
+~/.openclaw/skills/sinovec-memory/scripts/search_memories.sh "关键词"
+
+# 添加记忆
+~/.openclaw/skills/sinovec-memory/scripts/add_memory.sh "记忆内容" "用户ID"
+```
+
+### 方式二：HTTP API 集成
 
 在 `~/.openclaw/openclaw.json` 的 `plugins.entries` 中添加：
 
@@ -109,14 +133,7 @@ curl http://127.0.0.1:18793/stats
 }
 ```
 
-### 2. 启动 SinoVec 服务
-
-```bash
-systemctl enable --now memory-sinovec
-```
-
-### 3. 重启 OpenClaw Gateway
-
+然后重启 OpenClaw Gateway：
 ```bash
 systemctl restart openclaw-gateway
 ```
@@ -125,26 +142,30 @@ systemctl restart openclaw-gateway
 
 ```
 SinoVec/
-├── README.md             # 项目说明
-├── roadmap.md            # 开发路线图
-├── memory_sinovec.py       # 核心 API 服务
-├── extract_memories_sinovec.py   # 自动记忆提取脚本（支持 --dry-run）
-├── session_indexer_sinovec.py     # 会话索引脚本（支持 --dry-run）
-├── rebuild_memory_sinovec.sql     # 数据库表结构
-├── requirements.txt      # Python 依赖
-├── Dockerfile            # 容器镜像构建
-├── docker-compose.yml    # Docker 一键部署
-├── install.sh            # 快速安装脚本
-├── uninstall.sh          # 卸载脚本
-├── memory-sinovec.service # systemd 服务配置
-├── CHANGELOG.md          # 版本变更日志
-├── CONTRIBUTING.md       # 贡献指南
-├── LICENSE               # MIT 许可证
-├── .env.example          # 环境变量配置示例
-├── .gitignore            # Git 忽略配置
-└── examples/
-    ├── config.env         # Docker 配置示例
-    └── docker-compose.yml
+├── README.md                    # 项目说明
+├── roadmap.md                  # 开发路线图
+├── memory_sinovec.py           # 核心 API 服务
+├── extract_memories_sinovec.py # 自动记忆提取脚本
+├── session_indexer_sinovec.py  # 会话索引脚本
+├── rebuild_memory_sinovec.sql   # 数据库表结构
+├── requirements.txt             # Python 依赖
+├── Dockerfile                  # 容器镜像构建
+├── docker-compose.yml          # Docker 一键部署
+├── install.sh                  # 快速安装脚本（含 OpenClaw 技能安装）
+├── uninstall.sh                 # 卸载脚本
+├── memory-sinovec.service      # systemd 服务配置
+├── CHANGELOG.md               # 版本变更日志
+├── CONTRIBUTING.md             # 贡献指南
+├── LICENSE                    # MIT 许可证
+├── .env.example              # 环境变量配置示例
+├── .gitignore                # Git 忽略配置
+└── skill/                     # OpenClaw 记忆技能
+    ├── SKILL.md               # 技能描述
+    ├── scripts/               # 脚本
+    │   ├── search_memories.sh  # 搜索记忆
+    │   └── add_memory.sh      # 添加记忆
+    └── references/
+        └── api_schema.md      # API 文档
 ```
 
 ## 🧪 测试
