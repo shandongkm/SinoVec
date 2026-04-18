@@ -12,8 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --no-user -r requirements.txt
 
 COPY memory_sinovec.py extract_memories_sinovec.py session_indexer_sinovec.py common.py ./
-COPY fix-zhparser.sh /usr/local/bin/fix-zhparser.sh
-RUN chmod +x /usr/local/bin/fix-zhparser.sh
+COPY fix-zhparser.sh init-zhparser.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/fix-zhparser.sh /usr/local/bin/init-zhparser.sh
 
 RUN chown -R appuser:appuser /app
 
