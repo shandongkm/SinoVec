@@ -377,24 +377,74 @@ _llm_lock = threading.Lock()
 
 _ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 _ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+_ollama_fallback = os.getenv("OLLAMA_FALLBACK_MODELS", "qwen2.5:3b").split(",")
+
+
+def _ollama_check_available() -> bool:
+    """检测 Ollama 服务是否可用（不管模型是否存在）"""
+    try:
+        resp = requests.get(f"{_ollama_base}/api/tags", timeout=5)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _ollama_model_exists(model: str) -> bool:
+    """检测指定模型是否已拉取"""
+    try:
+        resp = requests.get(f"{_ollama_base}/api/tags", timeout=5)
+        if resp.status_code != 200:
+            return False
+        models = resp.json().get("models", [])
+        return any(m.get("name", "").startswith(model) for m in models)
+    except Exception:
+        return False
+
 
 def _ollama_generate(prompt: str) -> str:
-    try:
-        resp = requests.post(
-            f"{_ollama_base}/api/generate",
-            json={
-                "model": _ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "temperature": OLLAMA_TEMPERATURE,
-                "max_tokens": OLLAMA_MAX_TOKENS,
-            },
-            timeout=60
-        )
-        return resp.json().get("response", "").strip()
-    except Exception as _e:
-        logger.warning(f"Ollama API 调用失败: {_e}")
+    """
+    三级降级生成：
+    第1级：OLLAMA_MODEL（默认 qwen2.5:7b）
+    第2级：OLLAMA_FALLBACK_MODELS 中的模型（默认 qwen2.5:3b）
+    第3级：Ollama 不可用或所有模型均失败，降级返回空字符串
+    """
+    # 第0级：检测 Ollama 服务是否可用
+    if not _ollama_check_available():
+        logger.info("Ollama 服务不可用，LLM 扩展/重排已禁用（仅向量+BM25 检索）")
         return ""
+
+    models_to_try = [_ollama_model] + _ollama_fallback
+    tried = set()
+
+    for model in models_to_try:
+        model = model.strip()
+        if not model or model in tried:
+            continue
+        tried.add(model)
+
+        try:
+            resp = requests.post(
+                f"{_ollama_base}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": OLLAMA_TEMPERATURE,
+                    "max_tokens": OLLAMA_MAX_TOKENS,
+                },
+                timeout=60
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("response", "").strip()
+                if result:
+                    logger.info(f"LLM 生成成功（模型：{model}）")
+                    return result
+        except Exception as e:
+            logger.warning(f"Ollama {model} 调用失败: {e}，尝试下一级...")
+
+    # 所有模型均失败，降级
+    logger.info("所有 Ollama 模型均不可用，LLM 扩展/重排已禁用（仅向量+BM25 检索）")
+    return ""
 
 
 # ── LRU 缓存的查询扩展 ─────────────────────────────────────

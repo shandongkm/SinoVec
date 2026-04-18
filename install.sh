@@ -139,6 +139,41 @@ else
         || $PIP_CMD install -r "$CURRENT_DIR/requirements.txt"
 fi
 
+# ── Ollama 可选安装 ────────────────────────────────────────
+OLLAMA_MODEL_SELECTED=""
+read -p "是否安装 Ollama（本地 LLM，用于查询扩展和结果重排）？[y/N]: " INSTALL_OLLAMA
+if [[ "$INSTALL_OLLAMA" == "y" || "$INSTALL_OLLAMA" == "Y" ]]; then
+    if command -v ollama &> /dev/null; then
+        echo "✅ Ollama 已安装"
+    else
+        echo "正在安装 Ollama..."
+        curl -fsSL https://ollama.com/install.sh | sh
+        systemctl --user enable ollama 2>/dev/null || true
+        systemctl --user start ollama 2>/dev/null || true
+        echo "✅ Ollama 安装完成"
+    fi
+
+    echo "请选择 LLM 模型："
+    echo "  1) qwen2.5:7b（精度更高，需约6GB 磁盘空间）"
+    echo "  2) qwen2.5:3b（轻量省资源，需约2GB 磁盘空间）"
+    read -p "选择 [1/2]: " MODEL_CHOICE
+    case "$MODEL_CHOICE" in
+        2)
+            OLLAMA_MODEL_SELECTED="qwen2.5:3b"
+            ;;
+        *)
+            OLLAMA_MODEL_SELECTED="qwen2.5:7b"
+            ;;
+    esac
+
+    echo "正在拉取模型 $OLLAMA_MODEL_SELECTED（首次约需 2-6 分钟，请耐心等待）..."
+    ollama pull "$OLLAMA_MODEL_SELECTED"
+    echo "✅ 模型拉取完成"
+else
+    echo "⚠️  跳过 Ollama 安装"
+    echo "   LLM 扩展和重排功能将自动降级（仅使用向量+BM25 检索）"
+fi
+
 # ── 复制代码到安装目录 ─────────────────────────────────────
 echo "安装代码到 $PREFIX..."
 mkdir -p "$PREFIX"
@@ -171,6 +206,12 @@ MEMORY_DB_PASS=$DB_PASS
 
 # HuggingFace 代理（国内用户需要则取消注释）
 # HF_HUB_PROXY=http://127.0.0.1:7890
+
+# Ollama LLM 配置（可选，用于查询扩展和结果重排）
+# 不安装 Ollama 时自动降级（仅向量+BM25 检索）
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=${OLLAMA_MODEL_SELECTED:-qwen2.5:7b}
+OLLAMA_FALLBACK_MODELS=qwen2.5:3b
 EOF
 
 # ── 生成 systemd service 文件（路径直接写死）─────────────────

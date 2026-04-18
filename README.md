@@ -60,6 +60,55 @@ sudo ./install.sh
 - 配置 systemd 服务
 - **自动检测并安装 OpenClaw 记忆技能**（如已安装 OpenClaw）
 
+## 🤖 LLM 增强（可选）
+
+SinoVec 支持可选的 LLM 增强功能（通过 Ollama 本地推理）：
+
+- **查询扩展**：将短查询展开为多个相关关键词，提升召回率
+- **结果重排**：用 LLM 对候选结果二次打分，提高相关性
+
+### 三级降级机制
+
+SinoVec 内置三级降级保障，确保无 LLM 时仍能正常工作：
+
+| 级别 | 条件 | 行为 |
+|------|------|------|
+| 第1级 | Ollama + 主模型（默认 `qwen2.5:7b`）可用 | LLM 扩展 + 重排全开 |
+| 第2级 | 主模型不可用，降级到 `qwen2.5:3b` | LLM 扩展 + 重排全开 |
+| 第3级 | Ollama 未安装或所有模型均失败 | **自动降级**，仅使用向量+BM25 检索 |
+
+### 安装 Ollama（install.sh 交互选择）
+
+运行安装脚本时，会询问是否安装 Ollama：
+
+```bash
+是否安装 Ollama？[y/N]: y
+请选择 LLM 模型：
+  1) qwen2.5:7b（精度更高，需约6GB 磁盘空间）
+  2) qwen2.5:3b（轻量省资源，需约2GB 磁盘空间）
+```
+
+### 手动安装 Ollama
+
+```bash
+# 安装 Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 拉取模型
+ollama pull qwen2.5:7b   # 或 qwen2.5:3b
+
+# 验证
+ollama run qwen2.5:7b "你好"
+```
+
+### 环境变量
+
+```bash
+OLLAMA_BASE_URL=http://127.0.0.1:11434   # Ollama 服务地址
+OLLAMA_MODEL=qwen2.5:7b                  # 主模型
+OLLAMA_FALLBACK_MODELS=qwen2.5:3b        # 降级模型（逗号分隔）
+```
+
 ## 📡 API 接口
 
 ### 搜索记忆
