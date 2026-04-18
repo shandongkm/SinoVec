@@ -25,6 +25,9 @@ workspace/
 .idea/
 *.swp
 
+# Assets (large images, not needed in repo)
+assets/
+
 # OS
 .DS_Store
 Thumbs.db

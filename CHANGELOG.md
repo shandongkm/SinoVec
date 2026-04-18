@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.0.7 (2026-04-19)
+
+### 功能修复
+- **自动记忆提取去重修复**：`extract_memories_sinovec.py` 的 `is_recent()` 原使用 `last_access_time`（该字段从不更新，恒为 NULL），导致 6 小时去重窗口完全失效。现改用 `created_at`（INSERT 时自动写入）作为去重判断依据。
+- **会话缺口分析修复**：`cmd_session_l1_gap` 原尝试读取不存在的 JSONL 文件和 `session_messages` 表，现改为直接查询数据库中 `source='session'` 的已索引片段。
+- **热度流转 CLI 修复**：`cmd_promote_by_heat()` 的返回值结构与 CLI 输出格式不匹配，导致 `promote-heat` 命令输出 KeyError 或全零数据，现已修正。
+- **skill 脚本路径推断修复**：`add_memory.sh` 和 `search_memories.sh` 安装后路径推断失败（skill 目录多一层），现已支持多层向上搜索。
+- **skill 添加记忆 HTTP 端点**：新增 `POST /memory` HTTP 端点，`add_memory.sh` 优先走 HTTP API（只需 API Key），彻底解决非 root 用户无法添加记忆的问题。
+- **source_id 分隔符修复**：`session_indexer_sinovec.py` 的 `source_id` 原用单下划线，与含下划线的 session_id 混用产生解析歧义，现改用双下划线 `__` 分隔。
+
+### 健壮性修复
+- **卸载残留清理**：新增 timer 服务（`sinovec-extract.timer`、`sinovec-index.timer`）的停止、禁用和文件删除逻辑。
+- **数据库名 fallback**：卸载脚本 fallback 数据库名从错误的 `sinovec` 修正为 `memory`。
+- **install.sh sed 替换验证**：timer service 文件的 `ExecStart` 占位符替换后增加验证，失败时给出警告而非静默失效。
+- **DEDUP_WINDOW_HOURS 统一**：两模块该常量默认值从 1h/6h 不一致统一为 6h。
+- **skill 凭证文件**：安装时生成 `skill-credentials.env`，含 DB 密码供 CLI fallback 使用。
+
+### 配置修复
+- **端口默认值统一**：所有示例配置统一使用 5433，与 `install.sh` 和 `common.py` 默认值一致。
+- **session 片段索引**：在 `rebuild_memory_sinovec.sql` 中新增 `payload->>'source'` 索引，加速缺口分析查询。
+
+### 文档修复
+- **API 文档更新**：`api_schema.md` 新增 `POST /memory` 端点说明，更正添加记忆的 CLI 指引。
+- **skill 路径修正**：`SKILL.md` 更新脚本路径（安装后实际路径多了 `skill/` 层）。
+- **README 版本 badge**：修正 v1.0.5 → v1.0.6。
+- **docker-compose.yml**：新增 Ollama 可选服务（`profiles: [llm]`）、会话目录挂载注释。
+
+---
+
 ## v1.0.6 (2026-04-18)
 
 ### 功能增强

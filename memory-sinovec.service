@@ -1,5 +1,5 @@
 [Unit]
-Description=Memory Sinovec HTTP API (pgvector + FastEmbed BAAI/bge-small-zh-v1.5)
+Description=SinoVec Memory Layer HTTP API (pgvector + FastEmbed BAAI/bge-small-zh-v1.5)
 After=network.target postgresql.service
 
 [Service]
@@ -7,6 +7,8 @@ Type=simple
 User=root
 WorkingDirectory=/opt/SinoVec
 EnvironmentFile=-/etc/default/sinovec
+# ExecStart 由 install.sh 动态生成（支持 --venv 选项替换 python3 为 venv 路径）
+# 本文件仅供参考，实际生成路径以 install.sh 输出为准
 ExecStart=/usr/bin/python3 /opt/SinoVec/memory_sinovec.py serve --host 127.0.0.1 --port 18793
 Restart=always
 RestartSec=10
