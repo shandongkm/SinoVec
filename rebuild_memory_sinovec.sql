@@ -36,6 +36,10 @@ CREATE INDEX IF NOT EXISTS idx_sinovec_access
 CREATE INDEX IF NOT EXISTS idx_sinovec_recall
     ON sinovec (recall_count ASC);
 
+-- last_access_time 索引：hot_24h 查询需要（/stats 端点）
+CREATE INDEX IF NOT EXISTS idx_sinovec_last_access
+    ON sinovec (last_access_time DESC);
+
 -- 用户 ID 索引（支持多用户隔离查询）
 CREATE INDEX IF NOT EXISTS idx_sinovec_user_id
     ON sinovec ((payload->>'user_id'));

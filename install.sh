@@ -73,7 +73,19 @@ if ! command -v python3 &> /dev/null; then
     echo "错误: 未安装 Python3"
     exit 1
 fi
-echo "Python 版本: $($PYTHON_CMD --version 2>&1 | awk '{print $2}')"
+_PY_VER=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+if [ -z "$_PY_VER" ]; then
+    echo "错误: 无法读取 Python 版本"
+    exit 1
+fi
+# SinoVec 需要 Python 3.9+（使用 datetime.fromisoformat 的 timezone 支持等特性）
+_PY_MAJOR=$(echo "$_PY_VER" | cut -d. -f1)
+_PY_MINOR=$(echo "$_PY_VER" | cut -d. -f2)
+if [ "$_PY_MAJOR" -lt 3 ] || [ "$_PY_MAJOR" -eq 3 && [ "$_PY_MINOR" -lt 9 ]; then
+    echo "错误: SinoVec 需要 Python 3.9+，当前版本: $_PY_VER"
+    exit 1
+fi
+echo "Python 版本: $_PY_VER ✅"
 
 # ── 检查 PostgreSQL ─────────────────────────────────────────
 if ! command -v psql &> /dev/null; then
@@ -114,6 +126,11 @@ done
 
 read -p "数据库用户 [$DEFAULT_DB_USER]: " DB_USER
 DB_USER=${DB_USER:-$DEFAULT_DB_USER}
+# PostgreSQL identifier 验证：仅允许字母、数字、下划线
+if [[ ! "$DB_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    echo "错误: 用户名只能包含字母、数字和下划线，且不能以数字开头" >&2
+    exit 1
+fi
 
 read -sp "数据库密码: " DB_PASS
 echo ""
@@ -125,6 +142,11 @@ fi
 
 read -p "数据库名称 [memory]: " DB_NAME
 DB_NAME=${DB_NAME:-memory}
+# PostgreSQL identifier 验证：仅允许字母、数字、下划线（且首字符不能是数字）
+if [[ ! "$DB_NAME" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    echo "错误: 数据库名称只能包含字母、数字和下划线，且不能以数字开头" >&2
+    exit 1
+fi
 
 # ── 创建数据库和用户 ─────────────────────────────────────────
 echo "配置数据库..."
@@ -349,7 +371,10 @@ fi
 # ── 复制代码到安装目录 ─────────────────────────────────────
 echo "安装代码到 $PREFIX..."
 mkdir -p "$PREFIX"
-cp -r "$CURRENT_DIR"/. "$PREFIX"/
+cp -r "$CURRENT_DIR"/. "$PREFIX/"
+# 安装后清理 __pycache__/.pyc（避免跨 Python 版本的缓存污染）
+find "$PREFIX" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+find "$PREFIX" -name '*.pyc' -delete 2>/dev/null || true
 
 # ── 备份已有配置 ───────────────────────────────────────────
 if [ -f /etc/default/sinovec ]; then
@@ -517,8 +542,15 @@ if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
     mkdir -p "$OPENCLAW_SKILLS_DIR/sinovec-memory"
     cp -r "$CURRENT_DIR/skill/." "$OPENCLAW_SKILLS_DIR/sinovec-memory/"
 
-    # 生成 skill 专用凭证文件（含 DB 密码，供 add_memory.sh CLI fallback 使用）
-    # 注意：此文件权限 600，仅 root 可读写，openclaw 用户通过 HTTP API 添加记忆（不需要此文件）
+    # 复制 config.env（包含 API Key，供 skill 脚本使用）到 skill 安装根目录
+    # 注意：config.env 不含 DB 密码，仅含 API Key（skill 脚本走 HTTP API 只需 Key）
+    if [ -f "$PREFIX/config.env" ]; then
+        cp "$PREFIX/config.env" "$OPENCLAW_SKILLS_DIR/sinovec-memory/config.env"
+        chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/config.env"
+    fi
+
+    # 生成 skill 专用凭证文件（含 DB 密码，供 CLI fallback 使用）
+    # 注意：此文件权限 600，仅 root 可读写
     cat > "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env" << 'CREDEOF'
 MEMORY_DB_HOST=127.0.0.1
 MEMORY_DB_PORT=${DB_PORT:-5433}
@@ -526,7 +558,6 @@ MEMORY_DB_NAME=${DB_NAME:-memory}
 MEMORY_DB_USER=${DB_USER:-sinovec}
 MEMORY_DB_PASS=${DB_PASS}
 CREDEOF
-    # 将占位符替换为真实值（变量在 here-doc 中被延迟展开）
     sed -i "s/\${DB_PORT:-5433}/$DB_PORT/g; s/\${DB_NAME:-memory}/$DB_NAME/g; s/\${DB_USER:-sinovec}/$DB_USER/g; s/\${DB_PASS}/$DB_PASS/g" \
         "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
     chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
