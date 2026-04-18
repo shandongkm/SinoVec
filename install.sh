@@ -147,9 +147,26 @@ if [[ "$INSTALL_OLLAMA" == "y" || "$INSTALL_OLLAMA" == "Y" ]]; then
         echo "✅ Ollama 已安装"
     else
         echo "正在安装 Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
-        systemctl --user enable ollama 2>/dev/null || true
-        systemctl --user start ollama 2>/dev/null || true
+        # 下载安装脚本到临时文件，先审查后执行
+        curl -fsSL https://ollama.com/install.sh -o /tmp/ollama_install.sh
+        if [ -s /tmp/ollama_install.sh ]; then
+            echo "✅ Ollama 安装脚本已下载，准备执行..."
+            sh /tmp/ollama_install.sh
+            rm -f /tmp/ollama_install.sh
+        else
+            echo "❌ 下载 Ollama 安装脚本失败，请检查网络"
+            exit 1
+        fi
+
+        # 尝试启用并启动 Ollama 服务（需要 linger 权限）
+        if systemctl --user enable ollama 2>/dev/null; then
+            systemctl --user start ollama
+            echo "✅ Ollama 服务已启用并启动"
+        else
+            echo "⚠️  无法以 systemd user 服务运行 Ollama（需 linger 权限）"
+            echo "   请手动运行以下命令启动 Ollama:"
+            echo "   ollama serve &"
+        fi
         echo "✅ Ollama 安装完成"
     fi
 
@@ -167,8 +184,11 @@ if [[ "$INSTALL_OLLAMA" == "y" || "$INSTALL_OLLAMA" == "Y" ]]; then
     esac
 
     echo "正在拉取模型 $OLLAMA_MODEL_SELECTED（首次约需 2-6 分钟，请耐心等待）..."
-    ollama pull "$OLLAMA_MODEL_SELECTED"
-    echo "✅ 模型拉取完成"
+    if ollama pull "$OLLAMA_MODEL_SELECTED"; then
+        echo "✅ 模型拉取完成"
+    else
+        echo "⚠️  模型拉取失败，请检查网络后手动运行: ollama pull $OLLAMA_MODEL_SELECTED"
+    fi
 else
     echo "⚠️  跳过 Ollama 安装"
     echo "   LLM 扩展和重排功能将自动降级（仅使用向量+BM25 检索）"
