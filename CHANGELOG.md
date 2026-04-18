@@ -2,8 +2,21 @@
 
 ## v1.0.7 (2026-04-19)
 
+### 安全修复
+- **skill-credentials.env 生成安全修复**：`install.sh` 原使用 `sed` 替换 `${VAR}`，密码含特殊字符时可能处理异常；现改用 bash heredoc 模板 + targeted sed，规避 shell 注入风险。
+- **search_memories.sh 查询参数引用修复**：修复 `$QUERY` 未加引号导致多词查询被截断的问题（`python3 -c` 的 `sys.argv[1:]` 切割），改用 `join` 合并所有参数后统一编码。
+- **add_memory.sh CLI 回退凭证加载**：HTTP 回退到 CLI 模式时，新增优先查找 `skill-credentials.env`（OpenClaw 技能安装时生成），确保非 root 用户 CLI fallback 也能获取 DB 密码。
+- **session_indexer_sinovec.py 异常处理修复**：`_load_state()` 和 `_get_last_line_hash()` 的裸 `except:` 改为具体异常类型（`FileNotFoundError`, `JSONDecodeError`, `PermissionError`, `OSError`, `IOError`, `IndexError`, `UnicodeDecodeError`），避免掩盖编程错误。
+
 ### 功能修复
-- **自动记忆提取去重修复**：`extract_memories_sinovec.py` 的 `is_recent()` 原使用 `last_access_time`（该字段从不更新，恒为 NULL），导致 6 小时去重窗口完全失效。现改用 `created_at`（INSERT 时自动写入）作为去重判断依据。
+- **SKILL.md 脚本路径修正**：文档示例路径从错误的 `skill/scripts/` 修正为实际的 `scripts/`（`cp -r skill/.` 会打平目录结构）。
+- **Dockerfile 补充缺失脚本**：补充 `init-zhparser.sh` 到 Docker 镜像（原来只有 `fix-zhparser.sh`），确保容器内可执行 zhparser 初始化逻辑。
+- **docker-compose.yml 卷挂载路径修复**：`~/.cache/fastembed` 改为 `${HOME:-/root}/.cache/fastembed`，避免 tilde 在 docker-compose volume 映射中某些环境下不展开的问题。
+- **extract_from_text 内容提取扩展**：原实现仅捕获 `- *` 列表、`#` 标题和单行代码块，覆盖面极窄；现扩展支持：`[-*○]` 符号列表、`1.` 数字编号、`①` 圈号、` ``` ` 代码块、`key=value` 配置语句、引号内容、含决策词的完整句子等。
+- **cmd_dedup 向量邻居上限提升**：最近邻查询从 LIMIT 5 提升到 LIMIT 20，减少遗漏真正重复记忆的概率。
+
+### 功能修复
+- **自动记忆提取去重修复：`extract_memories_sinovec.py` 的 `is_recent()` 原使用 `last_access_time`（该字段从不更新，恒为 NULL），导致 6 小时去重窗口完全失效。现改用 `created_at`（INSERT 时自动写入）作为去重判断依据。
 - **会话缺口分析修复**：`cmd_session_l1_gap` 原尝试读取不存在的 JSONL 文件和 `session_messages` 表，现改为直接查询数据库中 `source='session'` 的已索引片段。
 - **热度流转 CLI 修复**：`cmd_promote_by_heat()` 的返回值结构与 CLI 输出格式不匹配，导致 `promote-heat` 命令输出 KeyError 或全零数据，现已修正。
 - **skill 脚本路径推断修复**：`add_memory.sh` 和 `search_memories.sh` 安装后路径推断失败（skill 目录多一层），现已支持多层向上搜索。
