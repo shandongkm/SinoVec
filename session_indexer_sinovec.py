@@ -126,8 +126,8 @@ def save_fragment(text: str, session_id: str, source_id: str) -> str:
             "created_at": now
         })
         cur.execute("""
-            INSERT INTO sinovec (id, vector, payload)
-            VALUES (%s, %s::vector, %s::jsonb)
+            INSERT INTO sinovec (id, vector, payload, source)
+            VALUES (%s, %s::vector, %s::jsonb, 'session')
         """, (pid, vec, payload))
         conn.commit()
         cur.close()

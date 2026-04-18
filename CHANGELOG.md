@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.7 (2026-04-19) - 补充修复
+
+### 功能修复
+- **HTTP /stats 与 CLI stats 一致性修复**：`/stats` HTTP 端点原使用 `WHERE source = 'memory'` 过滤，仅统计 CLI 添加的记忆，遗漏自动提取和会话索引的记忆。现移除该过滤条件，与 CLI `stats` 命令统计口径统一（统计所有记忆）。
+- **时间衰减函数时区修复**：`temporal_decay_score()` 混用 UTC 创建时间与本地时区 `datetime.now()`，当时区非 UTC 时会计算错误。现统一使用 UTC 时间计算，消除时差影响。
+
+### 文档修复
+- **README Python 版本要求 badge 修正**：badge 错误标注 "Python 3.10+"，实际代码要求 "Python 3.9+"（`datetime.fromisoformat` timezone 支持从 3.9 开始），已修正。
+
+---
+
 ## v1.0.7 (2026-04-19)
 
 ### 安全修复

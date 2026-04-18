@@ -56,8 +56,8 @@ def save_memory(text: str, source_id: str, user: str = "主人") -> str:
                               "source": "auto_extract", "source_id": source_id,
                               "created_at": datetime.now(timezone.utc).isoformat()})
         cur.execute("""
-            INSERT INTO sinovec (id, vector, payload)
-            VALUES (%s, %s::vector, %s::jsonb)
+            INSERT INTO sinovec (id, vector, payload, source)
+            VALUES (%s, %s::vector, %s::jsonb, 'auto_extract')
         """, (pid, vec, payload))
         conn.commit()
         cur.close()

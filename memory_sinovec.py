@@ -312,9 +312,9 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
                         cur = None
                         try:
                             cur = conn.cursor()
-                            cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM sinovec WHERE source = 'memory'")
+                            cur.execute("SELECT COUNT(*), SUM(recall_count), MAX(recall_count) FROM sinovec")
                             total, recall_sum, recall_max = cur.fetchone()
-                            cur.execute("SELECT COUNT(*) FROM sinovec WHERE source = 'memory' AND last_access_time > NOW() - INTERVAL '24 hours'")
+                            cur.execute("SELECT COUNT(*) FROM sinovec WHERE last_access_time > NOW() - INTERVAL '24 hours'")
                             hot_24h = cur.fetchone()[0]
                         finally:
                             if cur is not None:
@@ -642,7 +642,10 @@ def temporal_decay_score(created_at, half_life_days: int = DECAY_HALF_LIFE_DAYS)
     try:
         if isinstance(created_at, str):
             created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        age_days = (datetime.now() - created_at.replace(tzinfo=None)).days
+        # 统一使用 UTC 时间计算，消除本地时区差异
+        now_utc = datetime.now(timezone.utc)
+        created_utc = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        age_days = (now_utc - created_utc).days
         return 0.5 ** (age_days / half_life_days)
     except Exception:
         return 1.0
