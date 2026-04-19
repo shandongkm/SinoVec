@@ -32,6 +32,23 @@
 - **优化**：`install.sh` 支持虚拟环境、备份配置、动态生成 systemd 服务
 - **优化**：统一数据库默认值为 5433/openclaw
 
+### v1.0.2–v1.0.6 (2026-04-16 ~ 2026-04-18)
+- 各版本迭代修复与功能增强，详见 [CHANGELOG.md](./CHANGELOG.md)
+
+### v1.0.7 (2026-04-19)
+- **安全修复**：`install.sh` 中 `ollama install.sh` 下载的 curl 命令添加 `--max-time 120` 超时，防止网络故障时安装脚本永久挂起
+- **安全修复**：`skill-credentials.env` 生成改用 bash heredoc 模板 + targeted sed，消除特殊字符密码的 shell 注入风险
+- **功能修复**：`search_memories.sh` 多词查询被 `sys.argv[1:]` 截断 → 改用 `join` 合并所有参数后统一编码
+- **功能修复**：`add_memory.sh` CLI fallback 模式优先查找 `skill-credentials.env`，非 root 用户也可完整回退
+- **功能修复**：`session_indexer_sinovec.py` 裸 `except:` 改为具体异常类型，避免掩盖编程错误
+- **功能修复**：`extract_from_text` 内容提取策略大幅扩展：支持符号列表、数字编号、圈号、`key=value` 配置、引号内容、决策词句子等
+- **功能修复**：`cmd_dedup` 最近邻上限从 LIMIT 5 提升到 LIMIT 20，减少遗漏真正重复记忆
+- **功能修复**：`is_recent()` 去重窗口使用 `created_at` 而非恒为 NULL 的 `last_access_time`，6 小时去重窗口生效
+- **功能修复**：`/stats` HTTP 端点移除 `WHERE source = 'memory'` 过滤，统计口径与 CLI 一致
+- **功能修复**：`temporal_decay_score()` 统一使用 UTC，消除本地时区偏移计算错误
+- **文档修复**：README Python 版本要求 badge 从 "3.10+" 修正为 "3.9+"（`datetime.fromisoformat` timezone 支持从 3.9 开始）
+- **Docker 修复**：`init-zhparser.sh` 补充进 Dockerfile；`docker-compose.yml` 卷挂载 `${HOME:-/root}` 避免 tilde 展开问题
+
 ## 🔄 计划中 (v1.1.0)
 
 ### 高优先级
@@ -67,6 +84,7 @@
 | 版本 | 预计时间 | 主要内容 |
 |------|----------|---------|
 | v1.0.1 | 2026-04-15 | 修复关键 bug，增强安装体验 |
+| v1.0.7 | 2026-04-19 | 安全修复 + 内容提取策略扩展 + 时区/去重修复 |
 | v1.1.0 | 2026-Q2 | 性能基准测试 + Web 管理界面 |
 | v1.2.0 | 2026-Q3 | 多模态支持（图片记忆） |
 | v2.0.0 | 2026-Q4 | 分布式后端支持（Qdrant/Milvus） |

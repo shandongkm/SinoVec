@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![版本](https://img.shields.io/badge/version-v1.0.6-blue.svg)](CHANGELOG.md)
+[![版本](https://img.shields.io/badge/version-v1.0.7-blue.svg)](CHANGELOG.md)
 
 📌 **[开发路线图](roadmap.md)** - 了解 SinoVec 的过去、现在和未来计划。
 
@@ -273,6 +273,43 @@ python session_indexer_sinovec.py index --dry-run
 *   `MEMORY_DB_PASS` 环境变量必须设置，否则服务拒绝启动
 *   数据库密码使用强密码
 *   定期备份数据库
+
+## 🔒 安全审查报告
+
+本项目于 2026-04-19 进行了第四轮代码安全审查，审查范围包括：
+
+### ✅ 验证通过项
+
+| 检查项 | 状态 | 说明 |
+| --- | --- | --- |
+| Python 语法验证 | ✅ | 所有 .py 文件通过 `python3 -m py_compile` |
+| Shell 语法验证 | ✅ | 所有 .sh 文件通过 `bash -n` |
+| SQL 参数化 | ✅ | 所有数据库查询使用 `%s` 参数化，含 f-string 模板的 `like_conditions` 由 `_escape_like()` 构建后参数化 |
+| 凭证管理 | ✅ | 数据库密码从环境变量读取，API Key 文件权限 600 |
+| API 认证 | ✅ | 使用 `hmac.compare_digest` 定时安全比较 |
+| 时区处理 | ✅ | 统一使用 UTC 时区 (`datetime.now(timezone.utc)`) |
+| pgvector 索引 | ✅ | 正确配置 IVFFlat 索引 (vector_cosine_ops)，IVFFlat lists=100 |
+| 连接池 | ✅ | SimpleConnectionPool (1-20 连接)，线程安全 |
+| 命令注入 | ✅ | 未发现 `eval()`、`os.system()` 或 `subprocess(shell=True)` |
+| 文件锁 | ✅ | 使用 `fcntl.flock` 防止并发写入冲突 |
+| curl 超时 | ✅ | `install.sh` curl 下载添加 `--max-time 120` |
+
+### 🐛 历史累积问题（均已修复）
+
+前几轮审查发现并已在 v1.0.7 中修复的问题：
+
+| # | 问题 | 文件 | 风险 |
+|---|------|------|------|
+| 1 | top_k 参数无范围限制（DoS） | `memory_sinovec.py` | 中 |
+| 2 | install.sh sed 元字符注入 | `install.sh` | 中 |
+| 3 | 状态文件泄露会话路径 | `session_indexer_sinovec.py` | 低 |
+| 4 | extract_memories 时区混用 | `extract_memories_sinovec.py` | 低 |
+| 5 | _escape_like 缺少单引号转义 | `memory_sinovec.py` | 低 |
+| 6 | curl 下载无超时（永久挂起） | `install.sh` | 中 |
+
+---
+
+**审查结论**: 项目整体安全性良好，6 个历史问题均已在 v1.0.7 中修复，本轮新增 0 个待修复问题。
 
 ## 🤝 贡献
 

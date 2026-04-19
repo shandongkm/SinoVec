@@ -26,7 +26,9 @@ def _resolve_state_file() -> str:
             dir_ok = os.access(os.path.dirname(p) or "/tmp", os.W_OK)
             if dir_ok:
                 return p
-    return "/tmp/sinovec_session_indexer_state.json"
+    # 回退到 /tmp 使用匿名文件名（不泄露会话路径信息）
+    import uuid
+    return f"/tmp/sinovec_indexer_{uuid.uuid4().hex[:8]}.json"
 
 STATE_FILE = _resolve_state_file()
 
