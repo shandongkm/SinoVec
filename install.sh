@@ -97,7 +97,7 @@ fi
 echo "PostgreSQL 版本: $(psql --version | awk '{print $3}')"
 
 # ── 检查 pgvector ────────────────────────────────────────────
-if psql -U postgres -c "SELECT * FROM pg_extension WHERE extname='vector';" 2>/dev/null | grep -q vector; then
+if sudo -u postgres psql -c "SELECT * FROM pg_extension WHERE extname='vector';" 2>/dev/null | grep -q vector; then
     echo "✅ pgvector 扩展已安装"
 else
     echo "⚠️  pgvector 扩展未安装，正在安装..."
@@ -156,7 +156,7 @@ sudo -u postgres psql -c "CREATE DATABASE $DB_NAME;" 2>/dev/null || echo "数据
 if sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1; then
     echo "用户 $DB_USER 已存在"
 else
-    sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
+    sudo -u postgres psql --set="DB_PASS=$DB_PASS" -c "CREATE USER $DB_USER WITH PASSWORD :'DB_PASS';"
 fi
 sudo -u postgres psql -c "ALTER USER $DB_USER WITH SUPERUSER;"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
@@ -311,7 +311,7 @@ else
     read -p "是否现在安装 Ollama？[y/N]: " INSTALL_OLLAMA
     if [[ "$INSTALL_OLLAMA" =~ ^[Yy]$ ]]; then
         echo "正在安装 Ollama（下载约 50MB 安装包）..."
-        curl -fsSL https://ollama.com/install.sh -o /tmp/ollama_install.sh
+        curl -fsSL --max-time 120 https://ollama.com/install.sh -o /tmp/ollama_install.sh
         _curl_exit=$?
         if [ $_curl_exit -ne 0 ]; then
             echo "⚠️  Ollama 安装脚本下载失败（curl exit=$_curl_exit），跳过安装"
@@ -557,21 +557,19 @@ if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
     # 注意：此文件权限 600，仅 root 可读写
     # 使用 bash heredoc 写入，双引号不解释 $ 和反引号，变量在渲染时展开
     # 修复：原 python3 方式若密码含特殊字符（单/双引号）可能导致语法错误
-    # heredoc 双引号包裹：bash 展开 ${VAR}，但 $VAR 和 `cmd` 不展开（安全）
-    cat > "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env" << 'CREDFILE'
-MEMORY_DB_HOST=127.0.0.1
-MEMORY_DB_PORT=${DB_PORT}
-MEMORY_DB_NAME=${DB_NAME}
-MEMORY_DB_USER=${DB_USER}
-MEMORY_DB_PASS=${DB_PASS}
-CREDFILE
-    # 用 sed 将 ${VAR} 模式替换为实际值（避免 bash 展开时特殊字符注入）
-    sed -i \
-        -e "s/\${DB_PORT}/$DB_PORT/g" \
-        -e "s/\${DB_NAME}/$DB_NAME/g" \
-        -e "s/\${DB_USER}/$DB_USER/g" \
-        -e "s/\${DB_PASS}/$DB_PASS/g" \
-        "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
+    # 使用 Python 替代 sed 进行配置文件渲染（避免特殊字符注入风险）
+    python3 << PYEOF
+import os
+config = f"""MEMORY_DB_HOST=127.0.0.1
+MEMORY_DB_PORT=$DB_PORT
+MEMORY_DB_NAME=$DB_NAME
+MEMORY_DB_USER=$DB_USER
+MEMORY_DB_PASS=$DB_PASS
+"""
+with open("$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env", "w") as f:
+    f.write(config)
+os.chmod("$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env", 0o600)
+PYEOF
     chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
 
     echo "✅ 记忆技能已安装到: $OPENCLAW_SKILLS_DIR/sinovec-memory"

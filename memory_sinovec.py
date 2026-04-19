@@ -43,6 +43,9 @@ from typing import Optional
 
 from cachetools import TTLCache
 
+# ── DB 配置（统一从 common 导入，避免重复定义）──────────────────────
+from common import DB_CONFIG
+
 import psycopg2
 import numpy as np
 import jieba
@@ -106,21 +109,7 @@ OLLAMA_MAX_TOKENS  = int(_E("MEM_OLLAMA_MAX_TOKENS",   "500"))
 # ═══════════════════════════════════════════════════════════
 
 
-# ── DB 配置（支持环境变量覆盖）─────────────────────────────────────
-_db_pass = os.getenv("MEMORY_DB_PASS", "")
-if not _db_pass:
-    raise RuntimeError(
-        "MEMORY_DB_PASS environment variable is not set. "
-        "Please set it and restart. "
-        "Example: export MEMORY_DB_PASS=your_secure_password"
-    )
-DB_CONFIG = {
-    "host": os.getenv("MEMORY_DB_HOST", "127.0.0.1"),
-    "port": int(os.getenv("MEMORY_DB_PORT", "5433")),
-    "database": os.getenv("MEMORY_DB_NAME", "memory"),
-    "user": os.getenv("MEMORY_DB_USER", "sinovec"),
-    "password": _db_pass,
-}
+# ── DB 配置已从 common 导入（见上方 import）
 
 # ── 运行时检测 fts 列使用的分词配置 ─────────────────────────────────
 # fts 列可能用 chinese_zh（zhparser）或 simple，取决于安装时 zhparser 是否可用
@@ -293,7 +282,11 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
                 if not query:
                     self._send_json({"error": "missing q param"}, 400)
                     return
-                top_k = int(params.get("top_k", ["3"])[0])
+                try:
+                    top_k = int(params.get("top_k", ["3"])[0])
+                    top_k = max(1, min(top_k, 100))  # 限制范围 1-100，防止 DoS
+                except (ValueError, TypeError):
+                    top_k = 3
                 user_id = params.get("user_id", [None])[0] or None
                 use_rerank = params.get("rerank", ["1"])[0] != "0"
                 use_expand = params.get("expand", ["1"])[0] != "0"
@@ -1248,7 +1241,9 @@ def _vector_search(cur, vec, top_k: int, user_id: str = None) -> list:
 
 
 def _escape_like(text: str) -> str:
-    """转义 LIKE/ILIKE 中的通配符 %、_、\\"""
+    """转义 LIKE/ILIKE 中的通配符 %、_、\\ 以及单引号（防止 SQL 注入）"""
+    # 先转义单引号（SQL 注入防护），再转义 LIKE 通配符
+    text = text.replace("'", "''")
     return re.sub(r"([%_\\])", r"\\\1", text)
 
 

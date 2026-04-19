@@ -114,7 +114,7 @@ def extract_from_text(text: str) -> list[str]:
 
 def scan_sessions(hours: int = 1) -> list[dict]:
     """扫描最近 N 小时的会话文件"""
-    cutoff = datetime.now().timestamp() - hours * 3600
+    cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
     memories = []
     pattern = os.path.join(SESSIONS_DIR, "*.jsonl")
     for path in glob.glob(pattern):
