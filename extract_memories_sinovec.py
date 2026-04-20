@@ -4,11 +4,26 @@ SinoVec - 自动记忆提取脚本
 从对话日志中自动提取值得长期记忆的内容
 """
 
-import os, json, re, glob
+import os
+import json
+import re
+import glob
+import hashlib
+import uuid
+import argparse
+import logging
 from datetime import datetime, timezone
+
+MAX_LINE_BYTES = 1024 * 1024  # 1MB，超大单行保护阈值
+MAX_FILE_BYTES = 256 * 1024 * 1024  # 256MB，单文件总大小保护阈值
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ── 配置(统一从环境变量读取)───────────────────────────────────────
 from common import get_conn, get_embedding
+
+LOG_MEMORY_CONTENT = os.getenv("LOG_MEMORY_CONTENT", "false").lower() == "true"
 
 def _detect_sessions_dir() -> str:
     """按优先级尝试找到包含 .jsonl 文件的 session 目录"""
@@ -23,6 +38,7 @@ def _detect_sessions_dir() -> str:
     return "/root/.openclaw/agents/main/sessions"
 
 SESSIONS_DIR = _detect_sessions_dir()
+# 与 memory_sinovec.py 中的 DEDUP_WINDOW_HOURS 保持一致（统一从环境变量读取）
 DEDUP_WINDOW_HOURS = int(os.getenv("MEM_DEDUP_WINDOW_HOURS", "6"))
 
 def is_recent(source_id: str) -> bool:
@@ -44,21 +60,27 @@ def is_recent(source_id: str) -> bool:
     return exists
 
 def save_memory(text: str, source_id: str, user: str = "主人") -> str:
-    """保存记忆到数据库"""
-    import uuid
-    vec = get_embedding(text)
+    """保存记忆到数据库。模型降级时 get_embedding 返回全零向量，写入 DB DEFAULT（即全零向量），保持向量列 NOT NULL 约束。"""
+    try:
+        vec = get_embedding(text)
+    except RuntimeError:
+        vec = None
+    # 全零向量：模型降级，存储为 None（INSERT 使用 DB DEFAULT [0.0]*512）
+    if vec is not None and all(v == 0.0 for v in vec):
+        vec = None
     pid = str(uuid.uuid4())
     with get_conn() as conn:
         cur = conn.cursor()
-        # payload 中包含 created_at,与 is_recent() 的查询字段对应(一致性)
-        # 注意:sinovec 表的 created_at 列也有 DEFAULT NOW(),两者同步
+        now = datetime.now(timezone.utc).isoformat()
         payload = json.dumps({"data": text, "user_id": user,
                               "source": "auto_extract", "source_id": source_id,
-                              "created_at": datetime.now(timezone.utc).isoformat()})
+                              "created_at": now})
+        # vec 为 None 时使用零向量（NOT NULL 列且无 DB DEFAULT，必须显式传值）
+        vec_to_store = vec if vec is not None else [0.0] * 512
         cur.execute("""
             INSERT INTO sinovec (id, vector, payload, source)
             VALUES (%s, %s::vector, %s::jsonb, 'auto_extract')
-        """, (pid, vec, payload))
+        """, (pid, vec_to_store, payload))
         conn.commit()
         cur.close()
     return pid
@@ -120,11 +142,25 @@ def scan_sessions(hours: int = 1) -> list[dict]:
     for path in glob.glob(pattern):
         if os.path.getmtime(path) < cutoff:
             continue
+        # 文件总大小保护：跳过异常大的文件
         try:
+            file_size = os.path.getsize(path)
+            if file_size > MAX_FILE_BYTES:
+                logger.warning(f"会话文件过大（>{MAX_FILE_BYTES//1024//1024}MB），已跳过: {path}")
+                continue
+        except OSError:
+            pass
+        try:
+            _long_line_warned = False
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
+                        continue
+                    if len(line.encode("utf-8")) > MAX_LINE_BYTES:
+                        if not _long_line_warned:
+                            logger.warning(f"会话文件含超长行（>{MAX_LINE_BYTES//1024}KB），已跳过: {path}")
+                            _long_line_warned = True
                         continue
                     try:
                         msg = json.loads(line)
@@ -146,14 +182,13 @@ def scan_sessions(hours: int = 1) -> list[dict]:
                         for mem in extract_from_text(text_content):
                             if len(mem) > 10:
                                 memories.append({"text": mem, "source": os.path.basename(path)})
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError, KeyError):
                         pass
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"无法读取会话文件，已跳过: {path} ({e})")
     return memories
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser(description="SinoVec 自动记忆提取")
     parser.add_argument("--scan-recent", action="store_true", help="扫描最近会话")
     parser.add_argument("--hours", type=int, default=1, help="扫描最近几小时")
@@ -165,13 +200,15 @@ def main():
         memories = scan_sessions(args.hours)
         saved = 0
         for mem in memories:
-            import hashlib
             content_hash = hashlib.md5(mem["text"].encode()).hexdigest()[:16]
             if is_recent(content_hash):
                 print(f"  ⏭ 跳过: {mem['text'][:50]}...")
                 continue
             if args.dry_run:
-                print(f"  [dry-run] 应写入: {mem['text'][:50]}...")
+                if LOG_MEMORY_CONTENT:
+                    print(f"  [dry-run] 应写入: {mem['text'][:50]}...")
+                else:
+                    print(f"  [dry-run] 应写入: [内容已隐藏，设置 LOG_MEMORY_CONTENT=true 显示]")
             else:
                 pid = save_memory(mem["text"], content_hash)
                 print(f"  ✅ 已写入: {mem['text'][:50]}...")

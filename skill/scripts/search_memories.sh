@@ -13,18 +13,19 @@ fi
 # ── 确定项目根目录（兼容标准安装和 OpenClaw 技能目录结构）─────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 多层向上搜索，找有 config.env 或 memory_sinovec.py 的目录
-SINOVEC_HOME=""
-for depth in 2 3 4 5 6; do
-    candidate="$SCRIPT_DIR"
-    for ((i=1; i<=depth; i++)); do
-        candidate="$(dirname "$candidate")"
+# 递归向上搜索找 memory_sinovec.py 或 config.env（无层级限制）
+_find_sinovec_root() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+        if [ -f "$dir/memory_sinovec.py" ] || [ -f "$dir/config.env" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
     done
-    if [ -f "$candidate/memory_sinovec.py" ] || [ -f "$candidate/config.env" ]; then
-        SINOVEC_HOME="$candidate"
-        break
-    fi
-done
+    return 1
+}
+SINOVEC_HOME="$(_find_sinovec_root "$SCRIPT_DIR")"
 
 # ── 加载配置（优先普通用户可读的 config.env，fallback 到 root 专属配置）──
 CONFIG_LOADED=false
@@ -52,9 +53,8 @@ fi
 # 修复：原实现 $QUERY 未加引号，多词查询会被 split 切割
 ENCODED_QUERY=$(python3 -c "
 import urllib.parse, sys
-# 将所有命令行参数合并为一个字符串（以空格分隔），再编码
 query = ' '.join(sys.argv[1:])
 print(urllib.parse.quote(query, safe=''))
-" $QUERY)
-curl -s -X GET "${API_URL}/search?q=${ENCODED_QUERY}&top_k=${TOPK}&api_key=${API_KEY}" \
+" "$QUERY")
+curl -s --max-time 10 -X GET "${API_URL}/search?q=${ENCODED_QUERY}&top_k=${TOPK}&api_key=${API_KEY}" \
   -H "Content-Type: application/json" 2>/dev/null || echo '{"error": "服务不可用或查询失败"}'

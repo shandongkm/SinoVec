@@ -25,7 +25,7 @@ else
     echo "⚠️  zhparser 未安装，尝试编译安装..."
     ZH_INSTALLED=false
 
-    # ── 第2步：编译安装 zhparser ──────────────────────────
+    # ── 第2步：安装编译依赖 ─────────────────────────────
     echo "安装编译依赖..."
 
     # 安装 git 和 build-essential（基本都有，但确保一下）
@@ -35,33 +35,70 @@ else
         }
     fi
 
+    # 动态检测 PostgreSQL 大版本（支持 17/16/15/14）
+    _PG_MAJOR=$(psql -U "$PG_USER" -d "$PG_DB" -t -c 'SHOW server_version_num;' 2>/dev/null | cut -c1-2)
+    _PG_MAJOR=${_PG_MAJOR:-16}
+
     # 检查 postgresql-server-dev 是否存在
     PG_DEV=""
-    for ver in 16 15 14 13; do
-        if dpkg -l "postgresql-server-dev-$ver" 2>/dev/null | grep -q "^ii"; then
-            PG_DEV="postgresql-server-dev-$ver"
+    for ver in ${_PG_MAJOR} 16 15 14 13; do
+        if dpkg -l "postgresql-server-dev-${ver}" 2>/dev/null | grep -q "^ii"; then
+            PG_DEV="postgresql-server-dev-${ver}"
             break
         fi
     done
 
     if [ -z "$PG_DEV" ]; then
         echo "安装 postgresql-server-dev..."
-        if apt-get install -y postgresql-server-dev-16 2>> "$INSTALL_LOG"; then
-            PG_DEV="postgresql-server-dev-16"
+        if apt-get install -y "postgresql-server-dev-${_PG_MAJOR}" 2>> "$INSTALL_LOG"; then
+            PG_DEV="postgresql-server-dev-${_PG_MAJOR}"
         else
-            echo "[FAIL] apt-get install postgresql-server-dev-16 失败，尝试 15..." | tee -a "$INSTALL_LOG"
-            if apt-get install -y postgresql-server-dev-15 2>> "$INSTALL_LOG"; then
-                PG_DEV="postgresql-server-dev-15"
-            else
-                echo "[FAIL] apt-get install postgresql-server-dev-15 也失败" | tee -a "$INSTALL_LOG"
-                PG_DEV=""
-            fi
+            echo "[FAIL] apt-get install postgresql-server-dev-${_PG_MAJOR} 失败，尝试其他版本..." | tee -a "$INSTALL_LOG"
+            for _v in 16 15 14 13; do
+                if apt-get install -y "postgresql-server-dev-${_v}" 2>> "$INSTALL_LOG"; then
+                    PG_DEV="postgresql-server-dev-${_v}"
+                    break
+                fi
+            done
         fi
     else
         echo "✅ 找到 $PG_DEV"
     fi
 
-    # 尝试编译 zhparser
+    # ── 第2.5步：编译安装 SCWS（zhparser 依赖库）───────────
+    echo "[INFO] 编译安装 SCWS（zhparser 依赖）..." >> "$INSTALL_LOG"
+    cd /tmp
+    rm -rf scws-src 2>/dev/null || true
+
+    _SCWS_INSTALLED=false
+    if git clone --depth 1 https://github.com/hightman/scws.git scws-src 2>> "$INSTALL_LOG"; then
+        cd scws-src
+        cat > version.h << 'EOFH' 2>> "$INSTALL_LOG"
+#ifndef SCWS_VERSION_H
+#define SCWS_VERSION_H
+#define SCWS_VERSION "1.2.3"
+#define SCWS_VERSION_NUM 0x010203
+#define SCWS_VERSION_MAJOR 1
+#define SCWS_VERSION_MINOR 2
+#define SCWS_VERSION_REV 3
+#endif
+EOFH
+        ./configure --prefix=/usr/local >> "$INSTALL_LOG" 2>&1 && \
+        make -j$(nproc) >> "$INSTALL_LOG" 2>&1 && \
+        make install >> "$INSTALL_LOG" 2>&1 && \
+        ldconfig >> "$INSTALL_LOG" 2>&1 && \
+        _SCWS_INSTALLED=true && \
+        echo "[OK] SCWS 编译安装成功" || \
+        echo "[FAIL] SCWS 安装失败，详见 $INSTALL_LOG"
+        cd /tmp
+        rm -rf scws-src
+    else
+        echo "[FAIL] git clone SCWS 失败" | tee -a "$INSTALL_LOG"
+    fi
+
+    ldconfig 2>/dev/null || true
+
+    # ── 第3步：编译安装 zhparser（依赖 SCWS）────────────────
     echo "编译 zhparser（详细日志: $INSTALL_LOG）..."
     cd /tmp
     rm -rf zhparser 2>/dev/null || true
@@ -71,14 +108,18 @@ else
 
     if [ "$CLONE_OK" = "true" ]; then
         cd zhparser
-        echo "[INFO] 执行 make..." >> "$INSTALL_LOG"
+        echo "[INFO] 执行 make (SCWS_ROOT=/usr/local)..." >> "$INSTALL_LOG"
         make clean >> "$INSTALL_LOG" 2>&1 || true
-        make >> "$INSTALL_LOG" 2>&1 && make install >> "$INSTALL_LOG" 2>&1 && {
+        make SCWS_ROOT=/usr/local >> "$INSTALL_LOG" 2>&1 && \
+        make install SCWS_ROOT=/usr/local >> "$INSTALL_LOG" 2>&1 && \
+        {
             echo "[OK] zhparser make && make install 成功"
             ZH_INSTALLED=true
         } || {
             echo "[FAIL] zhparser make 或 make install 失败" | tee -a "$INSTALL_LOG"
-            echo "--- Make 输出 ---" >> "$INSTALL_LOG"
+            if [ "$_SCWS_INSTALLED" = "false" ]; then
+                echo "[提示] SCWS 依赖库安装失败可能是根本原因" | tee -a "$INSTALL_LOG"
+            fi
             cat /tmp/zhparser/make.log 2>/dev/null >> "$INSTALL_LOG" || true
         }
     else
@@ -89,7 +130,7 @@ else
     rm -rf /tmp/zhparser
     cd /
 
-    # ── 第3步：注册数据库扩展 ──────────────────────────
+    # ── 第4步：注册数据库扩展 ──────────────────────────
     if [ "$ZH_INSTALLED" = "true" ]; then
         echo "注册 zhparser 数据库扩展..."
         psql -U "$PG_USER" -d "$PG_DB" -c "CREATE EXTENSION IF NOT EXISTS zhparser;" 2>> "$INSTALL_LOG" && {
@@ -191,13 +232,29 @@ elif [ -f "$INSTALL_LOG" ] && [ -s "$INSTALL_LOG" ]; then
     echo "── 解决方案 ──────────────────────────────────────"
     echo ""
     echo "方法一（推荐 - 主机安装 zhparser 后修复）："
-    echo "   # 1. 在主机安装 zhparser（编译安装）"
-    echo "   apt-get install git build-essential postgresql-server-dev-16"
+    echo "   # 1. 安装编译依赖（动态检测 PostgreSQL 版本）"
+    echo "   apt-get install -y git build-essential"
+    echo "   _PG_VER=\$(psql --version | awk '{print \\$3}' | cut -d. -f1)"
+    echo "   apt-get install -y postgresql-server-dev-\${_PG_VER}"
+    echo ""
+    echo "   # 2. 编译安装 SCWS（zhparser 依赖库）"
+    echo "   git clone --depth 1 https://github.com/hightman/scws.git /tmp/scws"
+    echo "   cd /tmp/scws && cat > version.h << 'EOFH'"
+    echo "   #ifndef SCWS_VERSION_H"
+    echo "   #define SCWS_VERSION_H"
+    echo "   #define SCWS_VERSION \"1.2.3\""
+    echo "   #endif"
+    echo "   EOFH"
+    echo '   ./configure --prefix=/usr/local && make -j$(nproc) && make install && ldconfig'
+    echo ""
+    echo "   # 3. 编译安装 zhparser"
     echo "   git clone --depth 1 https://github.com/amutu/zhparser.git /tmp/zhparser"
-    echo "   cd /tmp/zhparser && make && make install"
+    echo "   cd /tmp/zhparser && make SCWS_ROOT=/usr/local && make install SCWS_ROOT=/usr/local"
+    echo ""
+    echo "   # 4. 注册数据库扩展"
     echo "   sudo -u postgres psql -d memory -c \"CREATE EXTENSION zhparser;\""
     echo ""
-    echo "   # 2. 运行修复脚本"
+    echo "   # 5. 运行修复脚本"
     echo "   cp SinoVec/fix-zhparser.sh /tmp/"
     echo "   sudo /tmp/fix-zhparser.sh"
     echo ""

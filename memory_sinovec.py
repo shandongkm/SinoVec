@@ -292,6 +292,9 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
                 use_expand = params.get("expand", ["1"])[0] != "0"
                 try:
                     results = cmd_search(query, top_k=top_k, user_id=user_id, use_rerank=use_rerank, use_expand=use_expand)
+                    # 补全 source 字段（API schema 要求）
+                    for r in results:
+                        r["source"] = "memory"
                     wrapped = {
                         "count": len(results),
                         "results": results,
@@ -300,6 +303,9 @@ def _run_http_server(host: str = "127.0.0.1", port: int = 18793) -> None:
                 except Exception as e:
                     self._send_json({"error": str(e)}, 500)
             elif parsed.path == "/stats":
+                if not self._check_auth():
+                    self._send_json({"error": "unauthorized"}, 401)
+                    return
                 try:
                     with get_conn() as conn:
                         cur = None
@@ -1457,7 +1463,12 @@ def cmd_add(text: str, user: str = "主人", force: bool = False) -> str:
             raise ValueError(f"DEDUP_WINDOW_HOURS 小时内已存在（id={dup[0][:8]}），用 --force 强制写入")
     # ── 质量门结束 ───────────────────────────────────────────────
 
-    vec = generate_vector(content)
+    # generate_vector 可能因 FastEmbed 模型未安装/下载失败而抛出 RuntimeError
+    # 此时降级为零向量（NOT NULL 列，必须显式传入）
+    try:
+        vec = generate_vector(content)
+    except RuntimeError:
+        vec = [0.0] * VEC_DIM
     now = datetime.now(timezone.utc).isoformat()
     mem_id = str(uuid.uuid4())
     payload = {

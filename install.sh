@@ -12,6 +12,15 @@ set -e
 DEFAULT_DB_PORT=5433
 DEFAULT_DB_USER=sinovec
 
+# ── 服务运行用户（systemd User= 字段）───────────────────────────
+# 生产环境建议使用非 root 用户以减少攻击面。
+# 注意：使用非 root 用户时，需确保：
+#   1. 该用户可读取 /etc/default/sinovec（chmod +r /etc/default/sinovec）
+#   2. 该用户可读写 $PREFIX/workspace（若启用自动记忆层级功能）
+#   3. 该用户的 ulimit 足够（systemd 默认已设）
+SERVICE_USER="root"
+
+
 # ── 解析参数 ──────────────────────────────────────────────
 USE_VENV=false
 VENV_PATH=""
@@ -97,12 +106,23 @@ fi
 echo "PostgreSQL 版本: $(psql --version | awk '{print $3}')"
 
 # ── 检查 pgvector ────────────────────────────────────────────
+# 动态检测 PostgreSQL 大版本号（兼容 14/15/16/17+）
+_PG_VERSION=$(psql --version | awk '{print $3}' | cut -d. -f1)
 if sudo -u postgres psql -c "SELECT * FROM pg_extension WHERE extname='vector';" 2>/dev/null | grep -q vector; then
     echo "✅ pgvector 扩展已安装"
 else
     echo "⚠️  pgvector 扩展未安装，正在安装..."
     apt update
-    apt install -y postgresql-16-pgvector
+    if apt-cache show "postgresql-${_PG_VERSION}-pgvector" &>/dev/null; then
+        apt install -y "postgresql-${_PG_VERSION}-pgvector"
+    else
+        for _v in 17 16 15 14; do
+            if apt-cache show "postgresql-${_v}-pgvector" &>/dev/null; then
+                apt install -y "postgresql-${_v}-pgvector"
+                break
+            fi
+        done
+    fi
     sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
 fi
 
@@ -186,37 +206,79 @@ if [[ "$INSTALL_ZHPARSER" =~ ^[Yy]$ ]]; then
         apt-get install -y build-essential 2>> "$ZH_INSTALL_LOG" || true
     fi
 
-    # 查找 postgresql-server-dev
+    # 动态查找已安装的 postgresql-server-dev（支持 17/16/15/14）
+    _PG_MAJOR=$(psql --version | awk '{print $3}' | cut -d. -f1)
     PG_DEV=""
-    for ver in 16 15 14 13; do
-        if dpkg -l "postgresql-server-dev-$ver" 2>/dev/null | grep -q "^ii"; then
-            PG_DEV="postgresql-server-dev-$ver"
+    for ver in ${_PG_MAJOR} 16 15 14 13; do
+        if dpkg -l "postgresql-server-dev-${ver}" 2>/dev/null | grep -q "^ii"; then
+            PG_DEV="postgresql-server-dev-${ver}"
             break
         fi
     done
     if [ -z "$PG_DEV" ]; then
         echo "安装 postgresql-server-dev..."
-        apt-get install -y postgresql-server-dev-16 2>> "$ZH_INSTALL_LOG" || {
-            echo "⚠️  postgresql-server-dev-16 安装失败，尝试 15..."
-            apt-get install -y postgresql-server-dev-15 2>> "$ZH_INSTALL_LOG" || true
-            PG_DEV="postgresql-server-dev-15"
+        apt-get install -y "postgresql-server-dev-${_PG_MAJOR}" 2>> "$ZH_INSTALL_LOG" || {
+            for _v in 16 15 14 13; do
+                if apt-get install -y "postgresql-server-dev-${_v}" 2>> "$ZH_INSTALL_LOG"; then
+                    PG_DEV="postgresql-server-dev-${_v}"
+                    break
+                fi
+            done
         }
-    else
+    fi
+    if [ -n "$PG_DEV" ]; then
         echo "✅ 找到 $PG_DEV"
     fi
 
-    # 编译 zhparser
+    # ── 第1步：编译安装 SCWS（zhparser 依赖库）──────────────
+    echo "[INFO] 编译安装 SCWS（zhparser 依赖）..." >> "$ZH_INSTALL_LOG"
+    cd /tmp
+    rm -rf scws scws-install 2>/dev/null || true
+
+    _SCWS_INSTALLED=false
+    if git clone --depth 1 https://github.com/hightman/scws.git scws-src 2>> "$ZH_INSTALL_LOG"; then
+        cd scws-src
+        cat > version.h << 'EOFH' 2>> "$ZH_INSTALL_LOG"
+#ifndef SCWS_VERSION_H
+#define SCWS_VERSION_H
+#define SCWS_VERSION "1.2.3"
+#define SCWS_VERSION_NUM 0x010203
+#define SCWS_VERSION_MAJOR 1
+#define SCWS_VERSION_MINOR 2
+#define SCWS_VERSION_REV 3
+#endif
+EOFH
+        ./configure --prefix=/usr/local 2>> "$ZH_INSTALL_LOG" && \
+        make -j$(nproc) 2>> "$ZH_INSTALL_LOG" && \
+        make install 2>> "$ZH_INSTALL_LOG" && \
+        ldconfig 2>> "$ZH_INSTALL_LOG" && \
+        _SCWS_INSTALLED=true && \
+        echo "✅ SCWS 编译安装成功" || \
+        echo "⚠️  SCWS 安装失败，详见 $ZH_INSTALL_LOG"
+        cd /tmp
+        rm -rf scws-src
+    else
+        echo "⚠️  git clone SCWS 失败，详见 $ZH_INSTALL_LOG"
+    fi
+
+    ldconfig 2>/dev/null || true
+
+    # ── 第2步：编译安装 zhparser（依赖 SCWS）─────────────────
     cd /tmp
     rm -rf zhparser 2>/dev/null || true
     echo "[INFO] git clone zhparser..." >> "$ZH_INSTALL_LOG"
+
     if git clone --depth 1 https://github.com/amutu/zhparser.git 2>> "$ZH_INSTALL_LOG"; then
         cd zhparser
         make clean >> "$ZH_INSTALL_LOG" 2>&1 || true
-        if make >> "$ZH_INSTALL_LOG" 2>&1 && make install >> "$ZH_INSTALL_LOG" 2>&1; then
+        if make SCWS_ROOT=/usr/local >> "$ZH_INSTALL_LOG" 2>&1 && make install SCWS_ROOT=/usr/local >> "$ZH_INSTALL_LOG" 2>&1; then
             ZH_INSTALLED=true
             echo "✅ zhparser 编译安装成功"
         else
             echo "⚠️  zhparser make/make install 失败，详见 $ZH_INSTALL_LOG"
+            if [ "$_SCWS_INSTALLED" = "false" ]; then
+                echo "   提示：SCWS 依赖库安装失败可能是根本原因"
+            fi
         fi
     else
         echo "⚠️  git clone zhparser 失败，详见 $ZH_INSTALL_LOG"
@@ -445,7 +507,7 @@ After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=root
+User=${SERVICE_USER}
 WorkingDirectory=$PREFIX
 EnvironmentFile=-/etc/default/sinovec
 ExecStart=$PYTHON_CMD $PREFIX/memory_sinovec.py serve --host 127.0.0.1 --port 18793

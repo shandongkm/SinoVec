@@ -49,6 +49,13 @@
 - **文档修复**：README Python 版本要求 badge 从 "3.10+" 修正为 "3.9+"（`datetime.fromisoformat` timezone 支持从 3.9 开始）
 - **Docker 修复**：`init-zhparser.sh` 补充进 Dockerfile；`docker-compose.yml` 卷挂载 `${HOME:-/root}` 避免 tilde 展开问题
 
+### v1.0.8 补充修复（社区反馈）
+- **修复**：`install.sh` pgvector 包名硬编码 `postgresql-16-pgvector`，在 PostgreSQL 17 系统上会找不到包 → 改为运行时动态检测 PostgreSQL 大版本（支持 14/15/16/17+）
+- **修复**：`install.sh` 和 `init-zhparser.sh` 编译 zhparser 前未安装 SCWS 依赖库，导致 `make` 失败 → 改为先从 `hightman/scws` 编译安装 SCWS，再 `make SCWS_ROOT=/usr/local zhparser`
+- **修复**：`install.sh` 和 `init-zhparser.sh` 的 `postgresql-server-dev` 版本硬编码为 16 → 改为动态检测
+- **修复**：`fix-zhparser.sh` 所有 `psql` 命令直接用 `-U` 参数，不兼容 Debian/Ubuntu 默认 peer 认证 → 改为通过 `sudo -u postgres` 统一执行
+- **文档**：更新 `fix-zhparser.sh` 内安装说明，加入 SCWS 依赖步骤和动态 PostgreSQL 版本检测
+
 ## 🔄 计划中 (v1.1.0)
 
 ### 高优先级

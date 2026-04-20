@@ -16,20 +16,22 @@ fi
 # ── 确定项目根目录（兼容标准安装和 OpenClaw 技能目录结构）─────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 多层向上搜索，找有 memory_sinovec.py 的目录
-SINOVEC_HOME=""
-for depth in 2 3 4 5 6; do
-    candidate="$SCRIPT_DIR"
-    for ((i=1; i<=depth; i++)); do
-        candidate="$(dirname "$candidate")"
+# 递归向上搜索找 memory_sinovec.py（无层级限制，比固定循环更健壮）
+_find_sinovec_root() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+        if [ -f "$dir/memory_sinovec.py" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
     done
-    if [ -f "$candidate/memory_sinovec.py" ]; then
-        SINOVEC_HOME="$candidate"
-        break
-    fi
-done
+    return 1
+}
 
-# 备选路径（多层搜索均未命中时）
+SINOVEC_HOME="$(_find_sinovec_root "$SCRIPT_DIR")"
+
+# 备选路径（搜索未命中时）
 if [ -z "$SINOVEC_HOME" ] && [ -f "/opt/SinoVec/memory_sinovec.py" ]; then
     SINOVEC_HOME="/opt/SinoVec"
 fi
@@ -69,7 +71,7 @@ print(json.dumps(obj, ensure_ascii=False))
 " "$DATA" "$USER_ID")
 
 # ── 发送 HTTP POST 请求 ──────────────────────────────────────────
-HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+HTTP_RESPONSE=$(curl -s --max-time 10 -w "\n%{http_code}" -X POST \
     "${API_URL}/memory" \
     -H "Content-Type: application/json; charset=utf-8" \
     -H "X-API-Key: ${API_KEY}" \
