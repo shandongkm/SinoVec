@@ -56,5 +56,6 @@ import urllib.parse, sys
 query = ' '.join(sys.argv[1:])
 print(urllib.parse.quote(query, safe=''))
 " "$QUERY")
-curl -s --max-time 10 -X GET "${API_URL}/search?q=${ENCODED_QUERY}&top_k=${TOPK}&api_key=${API_KEY}" \
-  -H "Content-Type: application/json" 2>/dev/null || echo '{"error": "服务不可用或查询失败"}'
+curl -s --max-time 10 -X GET "${API_URL}/search?q=${ENCODED_QUERY}&top_k=${TOPK}" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ${API_KEY}" 2>/dev/null || echo '{"error": "服务不可用或查询失败"}'

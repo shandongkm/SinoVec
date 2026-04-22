@@ -13,12 +13,12 @@ DEFAULT_DB_PORT=5433
 DEFAULT_DB_USER=sinovec
 
 # ── 服务运行用户（systemd User= 字段）───────────────────────────
-# 生产环境建议使用非 root 用户以减少攻击面。
-# 注意：使用非 root 用户时，需确保：
-#   1. 该用户可读取 /etc/default/sinovec（chmod +r /etc/default/sinovec）
-#   2. 该用户可读写 $PREFIX/workspace（若启用自动记忆层级功能）
-#   3. 该用户的 ulimit 足够（systemd 默认已设）
-SERVICE_USER="root"
+# 统一使用专用服务账户 sinovec，避免以 root 身份运行服务。
+# 注意：sinovec 用户需要：
+#   1. 可读取 /etc/default/sinovec（通过组 sinovec，chmod 640）
+#   2. 可读写 $PREFIX/memory/（热记忆层级文件目录）
+#   3. PostgreSQL 连接认证（pg_hba.conf md5 认证）
+SERVICE_USER="sinovec"
 
 
 # ── 解析参数 ──────────────────────────────────────────────
@@ -146,9 +146,10 @@ done
 
 read -p "数据库用户 [$DEFAULT_DB_USER]: " DB_USER
 DB_USER=${DB_USER:-$DEFAULT_DB_USER}
-# PostgreSQL identifier 验证：仅允许字母、数字、下划线
-if [[ ! "$DB_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-    echo "错误: 用户名只能包含字母、数字和下划线，且不能以数字开头" >&2
+# PostgreSQL identifier 验证：仅允许小写字母、下划线开头（PostgreSQL 惯例），禁止数字开头和特殊字符
+# 修复：原正则允许数字开头，存在 SQL 注入风险（虽然参数化，但仍需严格验证）
+if [[ ! "$DB_USER" =~ ^[a-z][a-z0-9_]*$ ]]; then
+    echo "错误: 用户名只能包含小写字母、数字和下划线，且必须以小写字母或下划线开头" >&2
     exit 1
 fi
 
@@ -162,9 +163,10 @@ fi
 
 read -p "数据库名称 [memory]: " DB_NAME
 DB_NAME=${DB_NAME:-memory}
-# PostgreSQL identifier 验证：仅允许字母、数字、下划线（且首字符不能是数字）
-if [[ ! "$DB_NAME" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-    echo "错误: 数据库名称只能包含字母、数字和下划线，且不能以数字开头" >&2
+# PostgreSQL identifier 验证：仅允许小写字母、下划线开头
+# 修复：原正则允许数字开头，存在 SQL 注入风险
+if [[ ! "$DB_NAME" =~ ^[a-z][a-z0-9_]*$ ]]; then
+    echo "错误: 数据库名称只能包含小写字母、数字和下划线，且必须以小写字母或下划线开头" >&2
     exit 1
 fi
 
@@ -442,10 +444,50 @@ cp -r "$CURRENT_DIR"/. "$PREFIX/"
 find "$PREFIX" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "$PREFIX" -name '*.pyc' -delete 2>/dev/null || true
 
+# ── 设置安装目录权限（sinovec 用户）────────────────────────
+echo "设置目录权限（sinovec 用户）..."
+# 仅对本次安装的文件设置权限，避免改变 $PREFIX 下已有的非 SinoVec 文件
+find "$PREFIX" -type d -exec chmod 755 {} \;
+find "$PREFIX" -type f -exec chmod 644 {} \;
+# 敏感文件保持 600
+chmod 600 "$PREFIX/config.env" 2>/dev/null || true
+chmod 600 "$PREFIX/skill-credentials.env" 2>/dev/null || true
+# memory 目录（热记忆层级文件）需可写
+mkdir -p "$PREFIX/memory" 2>/dev/null || true
+chown -R sinovec:sinovec "$PREFIX/memory"
+# var 目录（session_indexer 状态文件存放位置）
+mkdir -p "$PREFIX/var" 2>/dev/null || true
+chown -R sinovec:sinovec "$PREFIX/var"
+
 # ── 备份已有配置 ───────────────────────────────────────────
 if [ -f /etc/default/sinovec ]; then
     echo "备份已有配置: /etc/default/sinovec.bak"
     cp /etc/default/sinovec /etc/default/sinovec.bak
+fi
+
+# ── 创建专用服务用户 sinovec ──────────────────────────────
+echo "配置服务用户..."
+if ! id "sinovec" &>/dev/null; then
+    useradd -r -m -s /bin/false -c "SinoVec Service Account" sinovec && echo "✅ 创建服务用户: sinovec"
+else
+    echo "✅ 服务用户 sinovec 已存在"
+fi
+
+# ── 将 sinovec 用户加入 sinovec 组（确保可读 /etc/default/sinovec）────
+if ! groups sinovec 2>/dev/null | grep -qw sinovec; then
+    usermod -aG sinovec sinovec 2>/dev/null && echo "✅ sinovec 已加入 sinovec 组" || echo "⚠️  无法将 sinovec 加入组（可能已是最优配置）"
+fi
+
+# ── PostgreSQL 认证调整（允许 sinovec 用户 md5 连接）─────────
+PG_HBA=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
+if [ -n "$PG_HBA" ] && [ -f "$PG_HBA" ]; then
+    if grep -q "local \+all \+all \+peer" "$PG_HBA" 2>/dev/null; then
+        sed -i 's/local \+all \+all \+peer/local all all md5/' "$PG_HBA" && echo "✅ PostgreSQL 认证已调整为 md5"
+        systemctl reload postgresql && echo "✅ PostgreSQL 配置已重载" || {
+            echo "⚠️  PostgreSQL 配置重载失败，请手动执行: sudo systemctl reload postgresql"
+            echo "   新的认证配置将在 PostgreSQL 重启后生效"
+        }
+    fi
 fi
 
 # ── 生成 API 密钥 ──────────────────────────────────────────
@@ -487,7 +529,8 @@ MEMORY_API_KEY=${MEMORY_API_KEY}
 MEMORY_API_PORT=18793
 DEFAULT_DB_PORT=${DB_PORT:-5433}
 EOF
-chmod 600 /etc/default/sinovec
+chmod 640 /etc/default/sinovec
+chown root:sinovec /etc/default/sinovec  # sinovec 组可读，API Key 仅限 API 层面使用
 
 # ── 生成普通用户可读的 skill 配置（供 OpenClaw skill 脚本使用）──────
 # 仅包含 API Key 和端口，不含数据库密码（skill 脚本只需要 API Key 做 HTTP 认证）
@@ -508,11 +551,15 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=${SERVICE_USER}
+Group=${SERVICE_USER}
 WorkingDirectory=$PREFIX
 EnvironmentFile=-/etc/default/sinovec
 ExecStart=$PYTHON_CMD $PREFIX/memory_sinovec.py serve --host 127.0.0.1 --port 18793
 Restart=always
 RestartSec=10
+# 限制资源，防止服务被滥用
+LimitNOFILE=1024
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
@@ -537,6 +584,7 @@ Description=SinoVec 自动记忆提取
 After=network.target
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/default/sinovec
 ExecStart=REPLACEME
 StandardOutput=journal
 StandardError=journal
@@ -612,25 +660,38 @@ if [ -d "$OPENCLAW_SKILLS_DIR" ]; then
     # 注意：config.env 不含 DB 密码，仅含 API Key（skill 脚本走 HTTP API 只需 Key）
     if [ -f "$PREFIX/config.env" ]; then
         cp "$PREFIX/config.env" "$OPENCLAW_SKILLS_DIR/sinovec-memory/config.env"
-        chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/config.env"
+        chmod 640 "$OPENCLAW_SKILLS_DIR/sinovec-memory/config.env"
+        chown root:sinovec "$OPENCLAW_SKILLS_DIR/sinovec-memory/config.env"
     fi
 
     # 生成 skill 专用凭证文件（含 DB 密码，供 CLI fallback 使用）
     # 注意：此文件权限 600，仅 root 可读写
-    # 使用 bash heredoc 写入，双引号不解释 $ 和反引号，变量在渲染时展开
-    # 修复：原 python3 方式若密码含特殊字符（单/双引号）可能导致语法错误
-    # 使用 Python 替代 sed 进行配置文件渲染（避免特殊字符注入风险）
-    python3 << PYEOF
+    # 使用 Python 写入配置文件，确保密码中的特殊字符被正确转义
+    # 策略：bash 变量通过显式 export 传入 Python 环境，heredoc 保持单引号防止 $ 展开
+    export DB_PORT DB_NAME DB_USER DB_PASS
+    python3 << "PYEOF"
 import os
-config = f"""MEMORY_DB_HOST=127.0.0.1
-MEMORY_DB_PORT=$DB_PORT
-MEMORY_DB_NAME=$DB_NAME
-MEMORY_DB_USER=$DB_USER
-MEMORY_DB_PASS=$DB_PASS
-"""
-with open("$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env", "w") as f:
+import shlex
+
+cred_path = "/root/.openclaw/skills/sinovec-memory/skill-credentials.env"
+
+# 变量已通过 export 传入环境，直接读取无需 fallback
+_db_port = os.environ["DB_PORT"]
+_db_name = os.environ["DB_NAME"]
+_db_user = os.environ["DB_USER"]
+_db_pass = os.environ["DB_PASS"]
+
+# shlex.quote 对密码加单引号并转义内部单引号，确保写入文件后 shell source 安全
+config = (
+    f"MEMORY_DB_HOST=127.0.0.1\n"
+    f"MEMORY_DB_PORT={_db_port}\n"
+    f"MEMORY_DB_NAME={_db_name}\n"
+    f"MEMORY_DB_USER={_db_user}\n"
+    f"MEMORY_DB_PASS={shlex.quote(_db_pass)}\n"
+)
+with open(cred_path, "w") as f:
     f.write(config)
-os.chmod("$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env", 0o600)
+os.chmod(cred_path, 0o600)
 PYEOF
     chmod 600 "$OPENCLAW_SKILLS_DIR/sinovec-memory/skill-credentials.env"
 

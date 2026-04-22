@@ -50,6 +50,7 @@ echo "✅ 定时器已停止"
 # ── 删除所有 systemd unit 文件 ───────────────────────────────
 echo "删除 systemd 服务配置..."
 rm -f /etc/systemd/system/memory-sinovec.service
+rm -f /etc/systemd/system/memory-sinovec.socket  # 若曾安装过 socket 文件则删除
 # 删除自动记忆相关 unit（使用 glob 防止重命名后漏删）
 rm -f /etc/systemd/system/sinovec-extract.service \
        /etc/systemd/system/sinovec-extract.timer \
@@ -57,9 +58,19 @@ rm -f /etc/systemd/system/sinovec-extract.service \
        /etc/systemd/system/sinovec-index.timer
 # glob 兼容：删除所有 sinovec-* 相关的 service 和 timer
 rm -f /etc/systemd/system/sinovec-*.service \
-       /etc/systemd/system/sinovec-*.timer
+       /etc/systemd/system/sinovec-*.timer \
+       /etc/systemd/system/sinovec-*.socket
 systemctl daemon-reload
 echo "✅ systemd 配置已删除"
+
+# ── 删除 sinovec 服务用户（可选）────────────────────────────
+read -p "是否删除 sinovec 系统用户？[y/N] " DEL_SINOVEC_USER
+DEL_SINOVEC_USER="${DEL_SINOVEC_USER:-N}"
+if [[ "$DEL_SINOVEC_USER" == "y" || "$DEL_SINOVEC_USER" == "Y" ]]; then
+    if id "sinovec" &>/dev/null; then
+        userdel sinovec 2>/dev/null && echo "✅ sinovec 用户已删除" || echo "⚠️  无法删除 sinovec 用户（可能仍有进程）"
+    fi
+fi
 
 # ── 删除环境变量配置 ────────────────────────────────────────
 echo "删除环境变量配置 /etc/default/sinovec..."
@@ -78,11 +89,18 @@ else
 fi
 
 # ── 删除数据库（可选）──────────────────────────────────────
+# 安全验证：PostgreSQL identifier 必须是小写字母、数字、下划线，且以字母或下划线开头
+# 与 install.sh 的验证保持一致，防止通过修改 /etc/default/sinovec 进行注入
+if [[ ! "$DB_NAME_TO_DROP" =~ ^[a-z][a-z0-9_]*$ ]]; then
+    echo "⚠️  数据库名称格式不安全（$DB_NAME_TO_DROP），跳过删除" >&2
+    DEL_DB="N"
+fi
 read -p "是否删除数据库 $DB_NAME_TO_DROP？[y/N] " DEL_DB
 DEL_DB="${DEL_DB:-N}"
 if [[ "$DEL_DB" == "y" || "$DEL_DB" == "Y" ]]; then
     echo "删除数据库 $DB_NAME_TO_DROP..."
-    sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME_TO_DROP;" 2>/dev/null || true
+    # 使用双引号包裹 identifier 是 PostgreSQL 最佳实践，防止特殊字符问题
+    sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$DB_NAME_TO_DROP\";" 2>/dev/null || true
     echo "✅ 数据库 $DB_NAME_TO_DROP 已删除"
 fi
 

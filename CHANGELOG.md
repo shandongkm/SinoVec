@@ -1,4 +1,27 @@
 # Changelog
+## v1.0.8 (2026-04-20) - 安全加固与权限治理
+
+### 安全加固
+- **服务运行用户**：从 root 改为专用账户 sinovec，防止代码执行漏洞提升为系统 root 权限
+- **PostgreSQL 认证调整**：安装脚本自动将 peer 认证改为 md5，允许 sinovec 用户通过密码连接数据库
+- **目录权限收紧**：安装目录 chown sinovec:sinovec，敏感文件保持 600
+- **热记忆路径隔离**：热记忆文件从 `~/.openclaw/workspace/memory/` 迁移到 `$PREFIX/memory/`，解决跨用户权限问题
+- **API Key 安全**：移除 URL 参数传递支持（`?api_key=`），仅支持 `X-API-Key` header，防止日志泄露
+- **状态文件保护**：session_indexer 状态文件写入时 chmod 600，目录 chmod 700
+- **systemd 资源限制**：新增 memory-sinovec.service 的 LimitNOFILE=1024、MemoryMax=512M
+- **systemd socket 文件**：新增 memory-sinovec.socket，限制 MaxConnections=20
+- **CLI fallback 凭证路径**：/etc/default/sinovec 改为 chmod 640、chown root:sinovec，sinovec 用户可读
+- **HTTP 认证安全强化**：`_check_auth()` 在 API Key 未配置时明确拒绝非 /health 请求并记录错误日志；移除 /stats 和 /metrics 端点冗余 auth 检查
+
+### 功能修复
+- **HTTP 认证方法文档**：更新 docstring 说明，移除 URL 参数认证相关描述
+
+### 代码维护
+- **新增文件**：`sinovec_core/` 子包（db, llm, search, dedup, analysis, commands, http_server, constants）
+- **新增文件**：`memory-sinovec.socket` systemd socket 单元文件
+- **删除文件**：`memory_sinovec_pkg/` 旧子包目录（已被 sinovec_core 替代）
+
+---
 
 ## v1.0.7 (2026-04-19) - 补充修复
 

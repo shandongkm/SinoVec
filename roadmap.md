@@ -49,12 +49,22 @@
 - **文档修复**：README Python 版本要求 badge 从 "3.10+" 修正为 "3.9+"（`datetime.fromisoformat` timezone 支持从 3.9 开始）
 - **Docker 修复**：`init-zhparser.sh` 补充进 Dockerfile；`docker-compose.yml` 卷挂载 `${HOME:-/root}` 避免 tilde 展开问题
 
-### v1.0.8 补充修复（社区反馈）
+### v1.0.8 (2026-04-20)
 - **修复**：`install.sh` pgvector 包名硬编码 `postgresql-16-pgvector`，在 PostgreSQL 17 系统上会找不到包 → 改为运行时动态检测 PostgreSQL 大版本（支持 14/15/16/17+）
 - **修复**：`install.sh` 和 `init-zhparser.sh` 编译 zhparser 前未安装 SCWS 依赖库，导致 `make` 失败 → 改为先从 `hightman/scws` 编译安装 SCWS，再 `make SCWS_ROOT=/usr/local zhparser`
 - **修复**：`install.sh` 和 `init-zhparser.sh` 的 `postgresql-server-dev` 版本硬编码为 16 → 改为动态检测
 - **修复**：`fix-zhparser.sh` 所有 `psql` 命令直接用 `-U` 参数，不兼容 Debian/Ubuntu 默认 peer 认证 → 改为通过 `sudo -u postgres` 统一执行
 - **文档**：更新 `fix-zhparser.sh` 内安装说明，加入 SCWS 依赖步骤和动态 PostgreSQL 版本检测
+
+- **安全加固**：服务运行用户从 root 改为专用账户 sinovec，防止代码执行漏洞提升为系统 root 权限
+- **PostgreSQL 认证调整**：安装脚本自动将 peer 认证改为 md5，允许 sinovec 用户通过密码连接数据库
+- **目录权限收紧**：安装目录 chown sinovec:sinovec，热记忆文件隔离到 `$PREFIX/memory/`
+- **API Key 安全**：移除 URL 参数传递支持（`?api_key=`），仅支持 `X-API-Key` header，防止日志泄露
+- **状态文件保护**：session_indexer 状态文件 chmod 600，目录 chmod 700
+- **systemd 资源限制**：新增 LimitNOFILE=1024、MemoryMax=512M
+- **CLI fallback 凭证路径**：sinovec 用户可读 `/etc/default/sinovec`（chmod 640），CLI fallback 在非 root 环境不再失败
+- **systemd socket 文件**：新增 memory-sinovec.socket 连接数限制（MaxConnections=20）
+- **代码重构**：将 `memory_sinovec.py` 拆分为 `sinovec_core/` 子包，保持原 API 兼容
 
 ## 🔄 计划中 (v1.1.0)
 
@@ -92,6 +102,8 @@
 |------|----------|---------|
 | v1.0.1 | 2026-04-15 | 修复关键 bug，增强安装体验 |
 | v1.0.7 | 2026-04-19 | 安全修复 + 内容提取策略扩展 + 时区/去重修复 |
+| v1.0.8 | 2026-04-20 | 安全加固（权限治理/API Key安全/状态文件保护）+ 代码重构为子包 |
+
 | v1.1.0 | 2026-Q2 | 性能基准测试 + Web 管理界面 |
 | v1.2.0 | 2026-Q3 | 多模态支持（图片记忆） |
 | v2.0.0 | 2026-Q4 | 分布式后端支持（Qdrant/Milvus） |

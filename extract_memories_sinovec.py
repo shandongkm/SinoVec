@@ -29,13 +29,11 @@ def _detect_sessions_dir() -> str:
     """按优先级尝试找到包含 .jsonl 文件的 session 目录"""
     candidates = [
         os.getenv("SESSIONS_DIR"),
-        "/root/.openclaw/agents/main/sessions",
         os.path.expanduser("~/.openclaw/agents/main/sessions"),
     ]
     for d in candidates:
         if d and os.path.isdir(d) and glob.glob(os.path.join(d, "*.jsonl")):
             return d
-    return "/root/.openclaw/agents/main/sessions"
 
 SESSIONS_DIR = _detect_sessions_dir()
 # 与 memory_sinovec.py 中的 DEDUP_WINDOW_HOURS 保持一致（统一从环境变量读取）
@@ -44,8 +42,8 @@ DEDUP_WINDOW_HOURS = int(os.getenv("MEM_DEDUP_WINDOW_HOURS", "6"))
 def is_recent(source_id: str) -> bool:
     """
     检查是否在 DEDUP_WINDOW_HOURS 内已提取过(按 source_id 查 created_at)。
-    修复:原实现错误使用 last_access_time(该字段从不更新,永远为 NULL),
-    导致去重窗口完全失效。现改用 created_at(INSERT 时自动写入)。
+    注：last_access_time 字段在提取时从不更新（只在 recall 时更新），
+    所以必须用 created_at 来判断去重窗口。
     """
     with get_conn() as conn:
         cur = conn.cursor()

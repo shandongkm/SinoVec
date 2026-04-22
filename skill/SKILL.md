@@ -38,7 +38,7 @@ cd ~/.openclaw/skills/sinovec-memory/scripts
 
 ## 认证
 
-使用 `X-API-Key` Header 或 `?api_key=` 查询参数。
+使用 `X-API-Key` Header 认证。
 
 API Key 存储在 `/etc/default/sinovec` 的 `MEMORY_API_KEY`。
 API 地址：`http://127.0.0.1:18793`

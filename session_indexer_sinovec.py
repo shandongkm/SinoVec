@@ -19,35 +19,43 @@ from datetime import datetime, timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/root/.openclaw/agents/main/sessions")
+SESSIONS_DIR = os.getenv("SESSIONS_DIR", os.path.expanduser("~/.openclaw/agents/main/sessions"))
 STABLE_SECONDS = int(os.getenv("SESSION_INDEX_STABLE_SECONDS", "300"))
 
-# ── 状态文件路径解析（多路径 fallback，确保非 root 用户也能写入）─────
+# ── session_indexer 与包的 DB 连接共用 common.py ──────────────────
+# 注意：session_indexer 直接导入 common.py（与包内 db.py 共用 DB_CONFIG）
+from common import get_conn, get_embedding
+
+LOG_MEMORY_CONTENT = os.getenv("LOG_MEMORY_CONTENT", "false").lower() == "true"
+
+
+# ── 状态文件路径解析（多路径 fallback，按优先级尝试）─────────────
 def _resolve_state_file() -> str:
-    candidates = [
-        os.getenv("STATE_FILE"),
-        "/var/lib/sinovec/session_indexer_state.json",
-    ]
-    # 尝试 workspace 路径（用户可写）
+    # 优先级1：环境变量指定
+    if os.getenv("STATE_FILE"):
+        return os.getenv("STATE_FILE")
+    # 优先级2：sinovec 服务用户专属目录（install.sh 已 chown sinovec:sinovec）
+    sinovec_home = os.environ.get("SINOVEC_HOME", os.getenv("SINOVEC_HOME", ""))
+    if sinovec_home:
+        sinovec_var = os.path.join(sinovec_home, "var")
+        os.makedirs(sinovec_var, exist_ok=True)
+        if os.access(sinovec_var, os.W_OK):
+            return os.path.join(sinovec_var, "session_indexer_state.json")
+    # 优先级3：var 目录（系统管理员可提前创建并授权）
+    var_path = "/var/lib/sinovec/session_indexer_state.json"
+    if os.access("/var/lib/sinovec", os.W_OK):
+        return var_path
+    # 优先级4：workspace 回退（仅普通用户可写，不适合 sinovec 服务用户）
     workspace_state = os.path.join(
         os.path.expanduser("~/.openclaw/workspace"), ".sinovec_session_state.json"
     )
     if os.path.isdir(os.path.dirname(workspace_state)) and os.access(os.path.dirname(workspace_state), os.W_OK):
         return workspace_state
-    for p in candidates:
-        if p:
-            dir_ok = os.access(os.path.dirname(p) or "/tmp", os.W_OK)
-            if dir_ok:
-                return p
-    # 回退到固定路径（避免 UUID 每次运行变化导致增量索引失效）
+    # 优先级5：tmp 回退（避免因路径无写权限导致增量索引完全失效）
     return "/tmp/sinovec_session_indexer.json"
 
+
 STATE_FILE = _resolve_state_file()
-
-# ── 会话索引器配置（STATE_FILE 多路径 fallback）────────────────────
-from common import get_conn, get_embedding
-
-LOG_MEMORY_CONTENT = os.getenv("LOG_MEMORY_CONTENT", "false").lower() == "true"
 
 
 def _load_state() -> dict:
@@ -61,11 +69,19 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict) -> None:
-    """保存索引状态到文件"""
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    """保存索引状态到文件（权限 600，仅服务用户可读写）"""
+    dir_path = os.path.dirname(STATE_FILE)
+    os.makedirs(dir_path, exist_ok=True)
+    # 设置目录权限为 700（仅服务用户可访问）
+    try:
+        os.chmod(dir_path, 0o700)
+    except OSError:
+        pass
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(state, f)
+    # 设置文件权限为 600（防止敏感信息泄露）
+    os.chmod(tmp, 0o600)
     os.replace(tmp, STATE_FILE)
 
 
@@ -118,41 +134,52 @@ STATE_VERSION = 1  # 状态格式版本，用于未来兼容
 def is_duplicate(source_id: str) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM sinovec WHERE payload->>'source_id' = %s LIMIT 1", (source_id,))
+        cur.execute(
+            "SELECT 1 FROM sinovec WHERE payload->>'source_id' = %s LIMIT 1",
+            (source_id,),
+        )
         exists = cur.fetchone() is not None
         cur.close()
     return exists
 
 
 def save_fragment(text: str, session_id: str, source_id: str) -> str:
-    """存储会话片段。模型降级时 get_embedding 返回全零向量，写入 DB DEFAULT（即全零向量），保持向量列 NOT NULL 约束。"""
+    """
+    存储会话片段。
+    模型降级时 get_embedding 返回全零向量，写入 DB DEFAULT（即全零向量），
+    保持向量列 NOT NULL 约束。
+    """
     try:
         vec = get_embedding(text)
     except RuntimeError:
         vec = None
-    # 全零向量：模型降级，存储为 None（INSERT 使用 DB DEFAULT [0.0]*512）
+
+    # 全零向量：模型降级，存储为 None（INSERT 使用零向量）
     if vec is not None and all(v == 0.0 for v in vec):
         vec = None
+
     pid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps({
+        "data": text[:2000],
+        "user_id": "会话",
+        "source": "session",
+        "session_id": session_id,
+        "source_id": source_id,
+        "created_at": now,
+    })
+    # vec 为 None 时使用零向量（NOT NULL 列且无 DB DEFAULT，必须显式传值）
+    vec_to_store = vec if vec is not None else [0.0] * 512
+
     with get_conn() as conn:
         cur = conn.cursor()
-        payload = json.dumps({
-            "data": text[:500],
-            "user_id": "会话",
-            "source": "session",
-            "session_id": session_id,
-            "source_id": source_id,
-            "created_at": now
-        })
-        # vec 为 None 时使用零向量（NOT NULL 列且无 DB DEFAULT，必须显式传值）
-        vec_to_store = vec if vec is not None else [0.0] * 512
         cur.execute("""
             INSERT INTO sinovec (id, vector, payload, source)
             VALUES (%s, %s::vector, %s::jsonb, 'session')
         """, (pid, vec_to_store, payload))
         conn.commit()
         cur.close()
+
     return pid
 
 
@@ -172,6 +199,7 @@ def _acquire_index_lock():
     except (IOError, OSError):
         return None
 
+
 def _release_index_lock(lock_file):
     """释放索引锁"""
     try:
@@ -180,6 +208,7 @@ def _release_index_lock(lock_file):
     except Exception:
         pass
 
+
 class _IndexLock:
     """上下文管理器：自动获取/释放索引锁，防止并发运行"""
     def __enter__(self):
@@ -187,9 +216,11 @@ class _IndexLock:
         if self._lock_file is None:
             raise RuntimeError("另一个索引任务正在运行")
         return self._lock_file
+
     def __exit__(self, *args):
         if self._lock_file is not None:
             _release_index_lock(self._lock_file)
+
 
 def index_sessions(dry_run: bool = False, force: bool = False):
     try:
@@ -198,6 +229,7 @@ def index_sessions(dry_run: bool = False, force: bool = False):
     except RuntimeError as e:
         print(e)
         return None
+
 
 def _index_sessions_inner(dry_run: bool = False, force: bool = False):
     state = _load_state()
@@ -223,8 +255,7 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
         session_id = os.path.basename(path).replace(".jsonl", "")
         # session_id 中的特殊字符转义，防止影响 SQL 或文件名解析
         _sg_chars = "'\"\\"
-        safe_session_id = re.sub("[%s]" % _sg_chars, '_', session_id)
-        del _sg_chars
+        safe_session_id = re.sub(f"[{re.escape(_sg_chars)}]", "_", session_id)
         entry = state.get(path)
 
         if not _file_changed(path, entry, force=force):
@@ -249,10 +280,7 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
 
             line_count = len(messages)
             prev_line_count = entry.get("line_count", 0) if entry else 0
-
-            start_i = prev_line_count
-            if start_i >= line_count:
-                start_i = 0
+            start_i = prev_line_count if prev_line_count < line_count else 0
 
             new_entries_this_file = 0
             for i in range(start_i, line_count):
@@ -286,7 +314,7 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
                     else:
                         print(f"  [dry-run] 应写入: [内容已隐藏，设置 LOG_MEMORY_CONTENT=true 显示]")
                 else:
-                    save_fragment(content, session_id, source_id)
+                    save_fragment(content, safe_session_id, source_id)
                 new_entries_this_file += 1
                 saved += 1
                 if saved % 50 == 0:
@@ -299,7 +327,7 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
                     "mtime": current_mtime,
                     "size": current_size,
                     "line_count": line_count,
-                    "last_line_hash": last_line_hash_after
+                    "last_line_hash": last_line_hash_after,
                 }
                 continue
 
@@ -307,7 +335,7 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
                 "mtime": current_mtime,
                 "size": current_size,
                 "line_count": line_count,
-                "last_line_hash": last_line_hash_after
+                "last_line_hash": last_line_hash_after,
             }
 
             if new_entries_this_file > 0:
@@ -319,7 +347,7 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
                 "mtime": current_mtime,
                 "size": current_size,
                 "line_count": entry.get("line_count", 0) if entry else 0,
-                "last_line_hash": ""
+                "last_line_hash": "",
             }
 
     _save_state(new_state)
@@ -327,7 +355,6 @@ def _index_sessions_inner(dry_run: bool = False, force: bool = False):
     action = "扫描" if dry_run else "索引"
     print(f"\n✅ {action}完成: 新增 {saved} 条，变化 {changed} 个文件，跳过 {skipped} 个未变文件")
     return saved
-
 
 
 def main():
@@ -341,8 +368,10 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == "index":
-        index_sessions(dry_run=getattr(args, "dry_run", False),
-                      force=getattr(args, "force", False))
+        index_sessions(
+            dry_run=getattr(args, "dry_run", False),
+            force=getattr(args, "force", False),
+        )
     elif args.cmd == "check":
         state = _load_state()
         print(f"已追踪 {len([k for k in state if not k.startswith('_')])} 个 session 文件")

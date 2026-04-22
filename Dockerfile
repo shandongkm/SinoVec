@@ -12,10 +12,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --no-user -r requirements.txt
 
 COPY memory_sinovec.py extract_memories_sinovec.py session_indexer_sinovec.py common.py ./
+COPY sinovec_core/ ./sinovec_core/
 COPY fix-zhparser.sh init-zhparser.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/fix-zhparser.sh /usr/local/bin/init-zhparser.sh
 
 RUN chown -R appuser:appuser /app
+
+RUN mkdir -p /data/workspace && chown -R appuser:appuser /data/workspace
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:18793/health')" || exit 1

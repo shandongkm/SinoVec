@@ -3,7 +3,7 @@
 ## 基础信息
 
 - **Base URL**: `http://127.0.0.1:18793`
-- **认证**: `X-API-Key` header 或 `?api_key=` 查询参数
+- **认证**: `X-API-Key` Header 认证
 - **认证密钥**: 见 `/etc/default/sinovec` 中的 `MEMORY_API_KEY`
 
 ## 端点

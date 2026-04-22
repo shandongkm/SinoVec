@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![版本](https://img.shields.io/badge/version-v1.0.7-blue.svg)](CHANGELOG.md)
+[![版本](https://img.shields.io/badge/version-v1.0.8-blue.svg)](CHANGELOG.md)
 
 📌 **[开发路线图](roadmap.md)** - 了解 SinoVec 的过去、现在和未来计划。
 
@@ -11,7 +11,11 @@
 
 ## ⚡ 快速开始
 
-### 方式一：Docker 一键部署（推荐 ⭐）
+### 方式一：自动安装（推荐 ⭐⭐⭐⭐⭐）
+
+### 把本页面的网址发送给你的OpenClaw，同时指示“阅读并进行安装”。
+
+### 方式二：Docker 一键部署（推荐 ⭐⭐⭐）
 
 #### Gitee用户
 
@@ -31,7 +35,7 @@ cp .env.example .env
 docker-compose up -d
 ```
 
-### 方式二：手动部署
+### 方式三：手动部署（推荐 ⭐）
 #### Gitee用户
 
 ```bash
@@ -135,7 +139,7 @@ OLLAMA_FALLBACK_MODELS=qwen2.5:3b        # 降级模型（逗号分隔）
 ### 搜索记忆
 
 ```bash
-curl "http://127.0.0.1:18793/search?q=关键词&top_k=3&api_key=你的密钥"
+curl -H "X-API-Key: 你的密钥" "http://127.0.0.1:18793/search?q=关键词&top_k=3"
 ```
 
 **响应示例：**
@@ -224,9 +228,19 @@ systemctl restart openclaw-gateway
     SinoVec/
     ├── README.md                    # 项目说明
     ├── roadmap.md                  # 开发路线图
-    ├── memory_sinovec.py           # 核心 API 服务
+    ├── memory_sinovec.py           # 核心入口（HTTP API 服务 + CLI，兼容旧导入路径）
+    ├── sinovec_core/         # 核心代码子包
+    │   ├── constants.py            # 配置常量（环境变量统一入口）
+    │   ├── db.py                   # 数据库连接池、TS_CONFIG 检测、文件锁
+    │   ├── llm.py                  # FastEmbed 向量生成、Ollama LLM、查询扩展、重排
+    │   ├── search.py               # 检索核心（向量+BM25 混合检索、MMR 去重）
+    │   ├── dedup.py                # 去重（语义+时效/深度向量聚类）、热度晋升
+    │   ├── analysis.py             # 召回分析、会话缺口分析、血缘清理
+    │   ├── commands.py             # CLI 命令实现
+    │   └── http_server.py          # HTTP API 服务器
     ├── extract_memories_sinovec.py # 自动记忆提取脚本
     ├── session_indexer_sinovec.py  # 会话索引脚本
+    ├── common.py                   # 公共模块（连接池 + FastEmbed Embedding）
     ├── rebuild_memory_sinovec.sql   # 数据库表结构
     ├── requirements.txt             # Python 依赖
     ├── Dockerfile                  # 容器镜像构建
@@ -276,7 +290,7 @@ python session_indexer_sinovec.py index --dry-run
 
 ## 🔒 安全审查报告
 
-本项目于 2026-04-19 进行了第四轮代码安全审查，审查范围包括：
+本项目于 2026-04-20 进行了第五轮代码安全审查，审查范围包括：
 
 ### ✅ 验证通过项
 
@@ -293,23 +307,38 @@ python session_indexer_sinovec.py index --dry-run
 | 命令注入 | ✅ | 未发现 `eval()`、`os.system()` 或 `subprocess(shell=True)` |
 | 文件锁 | ✅ | 使用 `fcntl.flock` 防止并发写入冲突 |
 | curl 超时 | ✅ | `install.sh` curl 下载添加 `--max-time 120` |
+| ILIKE 转义 | ✅ | 使用全角字符替代 ILIKE 通配符（`%`→`\uff05`，`_`→`\uff3f`） |
+| 凭证文件写入安全 | ✅ | `skill-credentials.env` 生成改用 Python `shlex.quote()` 转义 |
+| API Key URL 参数传递 | ✅ | 已移除 `?api_key=` 支持，仅支持 `X-API-Key` header |
+| HTTP 认证安全强化 | ✅ | `_check_auth()` 空密钥时拒绝非 /health 请求并记录错误日志 |
+| 服务运行用户 | ✅ | SERVICE_USER=sinovec，非 root 运行 |
+| 目录权限 | ✅ | 安装目录 chown sinovec:sinovec，热记忆文件隔离 |
+| 状态文件权限 | ✅ | session_indexer 状态文件 chmod 600/700 |
+| systemd 资源限制 | ✅ | LimitNOFILE=1024, MemoryMax=512M |
 
 ### 🐛 历史累积问题（均已修复）
 
-前几轮审查发现并已在 v1.0.7 中修复的问题：
-
-| # | 问题 | 文件 | 风险 |
-|---|------|------|------|
-| 1 | top_k 参数无范围限制（DoS） | `memory_sinovec.py` | 中 |
-| 2 | install.sh sed 元字符注入 | `install.sh` | 中 |
-| 3 | 状态文件泄露会话路径 | `session_indexer_sinovec.py` | 低 |
-| 4 | extract_memories 时区混用 | `extract_memories_sinovec.py` | 低 |
-| 5 | _escape_like 缺少单引号转义 | `memory_sinovec.py` | 低 |
-| 6 | curl 下载无超时（永久挂起） | `install.sh` | 中 |
+| # | 问题 | 文件 | 风险 | 版本 |
+|---|------|------|------|------|
+| 1 | top_k 参数无范围限制（DoS） | `memory_sinovec.py` | 中 | v1.0.7 |
+| 2 | install.sh sed 元字符注入 | `install.sh` | 中 | v1.0.7 |
+| 3 | 状态文件泄露会话路径 | `session_indexer_sinovec.py` | 低 | v1.0.7 |
+| 4 | extract_memories 时区混用 | `extract_memories_sinovec.py` | 低 | v1.0.7 |
+| 5 | _escape_like 缺少单引号转义 | `memory_sinovec.py` | 低 | v1.0.7 |
+| 6 | curl 下载无超时（永久挂起） | `install.sh` | 中 | v1.0.7 |
+| 7 | ILIKE 通配符无法转义为字面值 | `search.py` | 中 | v1.0.8 |
+| 8 | `re.sub("[%s]" % chars)` 语法错误 | `session_indexer_sinovec.py` | 低 | v1.0.8 |
+| 9 | 数据库标识符允许数字开头 | `install.sh` | 低 | v1.0.8 |
+| 10 | 密码含特殊字符导致 heredoc 解析失败 | `install.sh` | 低 | v1.0.8 |
+| 11 | `temporal_decay_score` 异常处理过于宽泛 | `llm.py` | 低 | v1.0.8 |
+| 12 | 服务以 root 用户运行 | `install.sh` | 高 | v1.0.8 |
+| 13 | API Key 通过 URL 参数传递（日志泄露） | `http_server.py` | 中 | v1.0.8 |
+| 14 | 热记忆文件写入 workspace（权限问题） | `dedup.py` | 低 | v1.0.8 |
+| 15 | session_indexer 状态文件权限未设置 | `session_indexer_sinovec.py` | 低 | v1.0.8 |
 
 ---
 
-**审查结论**: 项目整体安全性良好，6 个历史问题均已在 v1.0.7 中修复，本轮新增 0 个待修复问题。
+**审查结论**: 项目整体安全性良好，历史 15 个安全问题均已在 v1.0.8 中修复，本轮新增 0 个待修复问题。
 
 ## 🤝 贡献
 
