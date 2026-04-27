@@ -49,6 +49,12 @@
 - **文档修复**：README Python 版本要求 badge 从 "3.10+" 修正为 "3.9+"（`datetime.fromisoformat` timezone 支持从 3.9 开始）
 - **Docker 修复**：`init-zhparser.sh` 补充进 Dockerfile；`docker-compose.yml` 卷挂载 `${HOME:-/root}` 避免 tilde 展开问题
 
+### v1.0.9 (2026-04-27)
+- **zhparser 完整安装流程**：SCWS 源码编译 + zhparser 扩展注册 + `chinese_zh` 文本搜索配置创建
+- **fts 生成列初始化**：为已有表补充 `fts tsvector` 生成列，解决新装 zhparser 后表结构不完整
+- **_batch_fetch_vectors 向量反序列化修复**：pgvector Python 包缺失时向量为字符串，修复 JSON 反序列化路径
+- **pgvector 显式依赖**：requirements.txt 声明 pgvector，确保向量列返回正确类型
+
 ### v1.0.8 (2026-04-20)
 - **修复**：`install.sh` pgvector 包名硬编码 `postgresql-16-pgvector`，在 PostgreSQL 17 系统上会找不到包 → 改为运行时动态检测 PostgreSQL 大版本（支持 14/15/16/17+）
 - **修复**：`install.sh` 和 `init-zhparser.sh` 编译 zhparser 前未安装 SCWS 依赖库，导致 `make` 失败 → 改为先从 `hightman/scws` 编译安装 SCWS，再 `make SCWS_ROOT=/usr/local zhparser`
@@ -102,6 +108,7 @@
 |------|----------|---------|
 | v1.0.1 | 2026-04-15 | 修复关键 bug，增强安装体验 |
 | v1.0.7 | 2026-04-19 | 安全修复 + 内容提取策略扩展 + 时区/去重修复 |
+| v1.0.9 | 2026-04-27 | zhparser中文分词完整支持（SCWS编译安装/fts列初始化）+ 向量反序列化修复 |
 | v1.0.8 | 2026-04-20 | 安全加固（权限治理/API Key安全/状态文件保护）+ 代码重构为子包 |
 
 | v1.1.0 | 2026-Q2 | 性能基准测试 + Web 管理界面 |

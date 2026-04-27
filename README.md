@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![pgvector](https://img.shields.io/badge/pgvector-0.5+-green.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![版本](https://img.shields.io/badge/version-v1.0.8-blue.svg)](CHANGELOG.md)
+[![版本](https://img.shields.io/badge/version-v1.0.9-blue.svg)](CHANGELOG.md)
 
 📌 **[开发路线图](roadmap.md)** - 了解 SinoVec 的过去、现在和未来计划。
 
@@ -290,7 +290,7 @@ python session_indexer_sinovec.py index --dry-run
 
 ## 🔒 安全审查报告
 
-本项目于 2026-04-20 进行了第五轮代码安全审查，审查范围包括：
+本项目于 2026-04-27 进行了第七轮代码安全审查，审查范围包括：
 
 ### ✅ 验证通过项
 
@@ -338,7 +338,7 @@ python session_indexer_sinovec.py index --dry-run
 
 ---
 
-**审查结论**: 项目整体安全性良好，历史 15 个安全问题均已在 v1.0.8 中修复，本轮新增 0 个待修复问题。
+**审查结论**: 项目整体安全性良好，历史 15 个安全问题均已在 v1.0.8 中修复，本轮新增 3 个问题（fts列缺失/向量反序列化/API Key管理），均已在 v1.0.9 中修复。
 
 ## 🤝 贡献
 

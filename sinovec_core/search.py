@@ -178,7 +178,16 @@ def _batch_fetch_vectors(mem_ids: list[str]) -> dict[str, Optional[list[float]]]
         result: dict[str, Optional[list[float]]] = {str(m): None for m in mem_ids}
         for mid, vec in rows:
             if vec is not None:
-                v = vec.tolist() if hasattr(vec, 'tolist') else list(vec)
+                # pgvector < 0.6 返回 numpy.array，>= 0.6 或通过 psycopg2 可能返回字符串
+                if hasattr(vec, 'tolist'):
+                    v = vec.tolist()
+                elif isinstance(vec, str):
+                    import json
+                    v = json.loads(vec)
+                elif isinstance(vec, (list, tuple)):
+                    v = list(vec)
+                else:
+                    v = list(vec)
                 result[str(mid)] = v
             else:
                 result[str(mid)] = None
@@ -286,7 +295,7 @@ def cmd_search(
     vec_scores = [1 - r[1] for r in vec_rows] if vec_rows else []
     bm25_scores = [r[1] for r in bm25_rows]
     max_vec = max(vec_scores) if vec_scores else 1.0
-    max_bm25 = max(bm25_scores) if bm25_scores else 1.0
+    max_bm25 = float(max(bm25_scores)) if bm25_scores else 1.0
 
     merged: dict[str, dict] = {}
     for mid, dist, payload in vec_rows:
@@ -302,7 +311,7 @@ def cmd_search(
 
     for mid, bm25_rank, payload in bm25_rows:
         mid_str = str(mid)
-        norm_bm25 = bm25_rank / max_bm25 if max_bm25 > 0 else 0.0
+        norm_bm25 = float(bm25_rank) / max_bm25 if max_bm25 > 0 else 0.0
         if mid_str in merged:
             merged[mid_str]["bm25_score"] = norm_bm25
             merged[mid_str]["score"] = (

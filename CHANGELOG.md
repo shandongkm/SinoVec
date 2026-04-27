@@ -1,4 +1,17 @@
 # Changelog
+## v1.0.9 (2026-04-27) - zhparser 中文分词完整支持与向量检索修复
+
+### 功能修复
+- **zhparser 完整安装流程**：新增 SCWS 编译安装步骤（从源码编译），解决 `postgresql-server-dev-*` 缺失导致的 `postgres.h` 头文件找不到的问题，完成 zhparser 扩展注册和 `chinese_zh` 文本搜索配置创建
+- **fts 生成列初始化**：为已有 `sinovec` 表补充 `fts tsvector` 生成列（使用 `chinese_zh` 分词配置），解决新装 zhparser 后表结构不完整的问题
+- **_batch_fetch_vectors 向量反序列化修复**：`pgvector` Python 包未安装时，向量通过 psycopg2 返回字符串类型而非 `numpy.array`，导致 MMR 去重时 `TypeError: can't multiply sequence by non-int of type 'str'`。现增加字符串 JSON 反序列化路径
+- **pgvector Python 包依赖**：在 `requirements.txt` 中显式声明 `pgvector` 依赖，确保向量列通过 `pgvector.vec.Vector` 返回可迭代对象
+
+### 安装体验优化
+- **zhparser 安装文档完善**：更新 `fix-zhparser.sh` 和 `init-zhparser.sh` 安装说明，明确 SCWS 源码编译步骤和动态 PostgreSQL 版本检测
+
+---
+
 ## v1.0.8 (2026-04-20) - 安全加固与权限治理
 
 ### 安全加固
